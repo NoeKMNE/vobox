@@ -1,0 +1,11 @@
+{
+  "version": "1.2.0",
+  "notes": "Vobox 1.2.0 — commandes honorées intégralement, surplus réparti proportionnellement aux estimations initiales, fiche toujours complète.",
+  "pub_date": "2026-10-10T12:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRNE4ybTZ5OTNjbE5OMFJDL0Q4bndqV0xwWFo1TkxRUmJyUHRkSHEvWU1ML0dRTm9yNWYxNHduR211RThXRTB0V0FFNkhNdlQ2ZGNDSkNqT3duSDRYemcwWWxNRVphUVFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkxNjIyMDc2CWZpbGU6Vm9ib3hfMS4yLjBfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjEuMi4wCjQxVXFKb0EwY0dBZzNmd0g3aHJjSUc5UG54NFdDb29oQmpZZnlOUVU1bnMvVlN0eDB2a3A3dGdiYlhyeUVIV3hhbTY3bDFJcEFWYWlKSnRKSjRCQURRPT0K",
+      "url": "https://github.com/NoeKMNE/vobox/releases/download/1.2.0/Vobox_1.2.0_x64-setup.exe"
+    }
+  }
+}
