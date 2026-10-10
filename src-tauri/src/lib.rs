@@ -13,7 +13,7 @@ use db::{
     ImportResult, ProduitStock, ProducteurFiche, RapportSemestre, ResumeParticipation, SearchCategory, Session, User,
 };
 
-pub(crate) const AI_API_BASE: &str = "https://logixio-code.click/api/v1/";
+pub(crate) const AI_API_BASE: &str = "https://logixio-code.click";
 
 #[derive(serde::Deserialize)]
 struct AiAuthResponse {
