@@ -1,0 +1,143 @@
+name: Release
+
+# Release manuelle : binaires signés + updates/stable.json
+# Déclenchement : onglet Actions -> Release -> Run workflow (tag `vX.Y.Z`).
+# Pour la release automatique à chaque push sur `publish`, voir auto-release.yml.
+# La version est synchronisée depuis le tag vers tauri.conf.json + Cargo.toml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag à publier (format vX.Y.Z)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout publish
+        uses: actions/checkout@v4
+        with:
+          ref: publish
+          fetch-depth: 0
+
+      - name: Create and push tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "Tag invalide (attendu vX.Y.Z) : $TAG"; exit 1 ;;
+          esac
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG déjà existant, on le réutilise"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+          - os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: publish
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Sync version from tag
+        run: node scripts/sync-version.mjs "${{ inputs.tag }}"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: 'Vobox ${{ inputs.tag }}'
+          releaseDraft: true
+          prerelease: false
+
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-${{ runner.os }}
+          path: |
+            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/release/bundle/**/*-setup*.zip
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.AppImage.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout publish
+        uses: actions/checkout@v4
+        with:
+          ref: publish
+
+      - name: Download updater artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate updates/stable.json
+        run: node scripts/gen-updater-json.mjs --tag "${{ inputs.tag }}" --repo "${{ github.repository }}" --assets artifacts --out updates/stable.json
+
+      - name: Attach binaries to draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            updates/stable.json
+            artifacts/**/*.sig
+            artifacts/**/*-setup*.zip
+            artifacts/**/*.app.tar.gz
+            artifacts/**/*.AppImage.tar.gz
+
+      - name: Commit updates/stable.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add updates/stable.json
+          git commit -m "chore: publie stable.json pour ${{ inputs.tag }} [skip release]" || echo "rien à commiter"
+          git push origin publish

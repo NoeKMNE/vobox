@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowDown, ArrowUp, FileText, Loader } from '@lucide/vue'
-import CalligraphText from '../components/CalligraphText.vue'
-import { getToken, listFiches, type FicheSummary } from '../composables/useAuth'
+import { ArrowDown, ArrowUp, FileText, Loader, Scale, Users } from '@lucide/vue'
+import {
+  getToken,
+  listFiches,
+  type FicheSummary
+} from '../composables/useAuth'
 
 const router = useRouter()
 
@@ -12,9 +15,14 @@ const loading = ref(false)
 const error = ref('')
 const triDesc = ref(true)
 
+const formatNum = (n: number, digits = 0) =>
+  new Intl.NumberFormat('fr-FR', { maximumFractionDigits: digits }).format(n)
+
 const formatKg = (kg: number) => {
+  if (kg < 1000) return `${formatNum(Math.round(kg))} kg`
   const tonnesVal = kg / 1000
-  return `${new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(Math.round(tonnesVal * 100) / 100)} t`
+  const arrondi = Math.round(tonnesVal * 100) / 100
+  return `${formatNum(arrondi, 2)} t`
 }
 
 const triees = computed(() =>
@@ -47,6 +55,10 @@ const voir = (id: number) => {
   router.push({ name: 'Sheet', query: { id: String(id) } })
 }
 
+const voirParticipations = () => {
+  router.push({ name: 'ProducerHistory' })
+}
+
 onMounted(load)
 </script>
 
@@ -54,7 +66,7 @@ onMounted(load)
   <div class="archive-page">
     <header class="page-header">
       <div class="page-header-text">
-        <h1><CalligraphText text="Archives" :initial="true" /></h1>
+        <h1>Archives</h1>
         <p>Historique des fiches de traçabilité</p>
       </div>
     </header>
@@ -85,6 +97,14 @@ onMounted(load)
               <span>Anciennes</span>
             </button>
           </div>
+          <button class="view-btn part-btn" @click="voirParticipations" title="Ouvrir l'historique des participations d'un producteur">
+            <Users :size="14" />
+            <span>Participations d'un producteur</span>
+          </button>
+          <button class="view-btn part-btn" @click="router.push({ name: 'RapportSemestre' })" title="Restes de produits en fin de semestre">
+            <Scale :size="14" />
+            <span>Restes du semestre</span>
+          </button>
         </div>
 
         <p v-if="loading" class="empty"><Loader class="spin" :size="14" /> Chargement…</p>
@@ -131,7 +151,7 @@ onMounted(load)
 }
 
 .page-header h1 {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-h);
   margin: 0 0 4px;
@@ -161,16 +181,16 @@ onMounted(load)
 }
 
 .msg.error {
-  color: #dc2626;
+  color: var(--error);
   background: rgba(220, 38, 38, 0.08);
   border: 1px solid rgba(220, 38, 38, 0.25);
 }
 
 .history-card {
-  background: linear-gradient(180deg, var(--bg) 0%, rgba(255, 255, 255, 0.5) 100%);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  background: var(--surface-container-low);
+  border: none;
+  border-radius: var(--shape-lg);
+  box-shadow: var(--elev-1);
   padding: 18px;
 }
 
@@ -293,13 +313,13 @@ onMounted(load)
 }
 
 .history-stat.complete {
-  color: #16a34a;
-  background: rgba(34, 197, 94, 0.12);
+  color: var(--success, #16a34a);
+  background: color-mix(in srgb, var(--success, #16a34a) 12%, transparent);
 }
 
 .history-stat.partielle {
-  color: #d97706;
-  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning, #b45309);
+  background: color-mix(in srgb, var(--warning, #b45309) 14%, transparent);
 }
 
 .history-prod {
@@ -329,6 +349,12 @@ onMounted(load)
 
 .view-btn:hover {
   filter: brightness(1.05);
+}
+
+.part-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 @media (max-width: 480px) {

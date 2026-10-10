@@ -134,21 +134,9 @@ const handleTouchEnd = (e: TouchEvent) => {
   min-height: 100svh;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: var(--surface);
   touch-action: pan-y;
   overflow-x: hidden;
-}
-
-.onboarding-container::before {
-  content: '';
-  position: fixed;
-  inset: -25%;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(620px 420px at 12% 8%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
-    radial-gradient(720px 520px at 88% 88%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 70%),
-    radial-gradient(420px 320px at 72% 12%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%);
 }
 
 .onboarding-header,
@@ -169,16 +157,16 @@ const handleTouchEnd = (e: TouchEvent) => {
 .progress-bar {
   flex: 1;
   height: 4px;
-  background: color-mix(in srgb, var(--accent) 18%, var(--border));
-  border-radius: 2px;
+  background: var(--secondary-container);
+  border-radius: var(--shape-full);
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 75%, #fff 25%) 100%);
-  border-radius: 2px;
-  transition: width 0.3s ease;
+  background: var(--primary);
+  border-radius: var(--shape-full);
+  transition: width 0.3s cubic-bezier(0.2, 0, 0, 1);
 }
 
 .step-indicator {
@@ -195,35 +183,36 @@ const handleTouchEnd = (e: TouchEvent) => {
   justify-content: center;
   font-size: 12px;
   font-weight: 600;
-  background: var(--border);
-  color: var(--text);
-  transition: all 0.2s;
+  background: var(--surface-container-highest);
+  color: var(--on-surface-variant);
+  transition: background var(--motion), color var(--motion);
 }
 
 .step-indicator span.active {
-  background: var(--accent);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .step-indicator span.completed {
-  background: var(--accent);
-  color: white;
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 
 .skip-btn {
   background: none;
   border: none;
-  color: var(--text);
+  color: var(--primary);
   font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
   cursor: pointer;
-  padding: 8px 12px;
-  border-radius: 6px;
-  transition: background 0.2s;
+  padding: 10px 16px;
+  border-radius: var(--shape-full);
+  transition: background var(--motion);
 }
 
 .skip-btn:hover {
-  background: var(--accent-bg);
-  color: var(--accent);
+  background: var(--primary-container);
 }
 
 .onboarding-content {
@@ -240,8 +229,8 @@ const handleTouchEnd = (e: TouchEvent) => {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
+  border-top: 1px solid var(--outline-variant);
+  background: var(--surface-container-low);
 }
 
 .btn {
@@ -249,32 +238,34 @@ const handleTouchEnd = (e: TouchEvent) => {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 14px 28px;
-  font-size: 16px;
+  height: 52px;
+  padding: 0 28px;
+  font-size: 15px;
   font-weight: 600;
-  border-radius: 8px;
+  letter-spacing: 0.1px;
+  border-radius: var(--shape-full);
   border: none;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: box-shadow var(--motion), filter var(--motion);
 }
 
 .btn-primary {
-  background: var(--accent);
-  color: white;
+  background: var(--primary);
+  color: var(--on-primary);
 }
 
 .btn-primary:hover {
-  filter: brightness(1.1);
+  box-shadow: var(--elev-1);
+  filter: brightness(1.06);
 }
 
 .btn-secondary {
-  background: var(--accent-bg);
-  color: var(--accent);
-  border: 1px solid var(--accent-border);
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
 }
 
 .btn-secondary:hover {
-  background: var(--accent-border);
+  box-shadow: var(--elev-1);
 }
 
 .btn svg {

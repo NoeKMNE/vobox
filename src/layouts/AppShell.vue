@@ -1,16 +1,17 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Archive, ChevronsLeft, Database, FileText, LayoutDashboard, LogOut, Settings, User } from '@lucide/vue'
-import CalligraphText from '../components/CalligraphText.vue'
+import { Archive, BookOpenCheck, ChevronsLeft, Database, FileText, LayoutDashboard, LogOut, Settings, Sparkles, User } from '@lucide/vue'
 import { clearToken, getSession, getToken, logout as apiLogout } from '../composables/useAuth'
+import GuideTour from '../components/GuideTour.vue'
+import UpdateDialog from '../components/UpdateDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 
 const user = ref<{ name: string; email: string } | null>(null)
 
-const sidebarCollapsed = ref(localStorage.getItem('agrobox_sidebar_collapsed') === 'true')
+const sidebarCollapsed = ref(localStorage.getItem('Vobox_sidebar_collapsed') === 'true')
 
 const loadUser = async () => {
   const token = getToken()
@@ -28,7 +29,7 @@ watch(() => route.path, loadUser)
 
 const toggleSidebar = () => {
   sidebarCollapsed.value = !sidebarCollapsed.value
-  localStorage.setItem('agrobox_sidebar_collapsed', String(sidebarCollapsed.value))
+  localStorage.setItem('Vobox_sidebar_collapsed', String(sidebarCollapsed.value))
 }
 
 const goSection = (name: string) => {
@@ -68,7 +69,7 @@ const logout = async () => {
         >
           <ChevronsLeft :size="18" />
         </button>
-        <span class="brand-name" data-label><CalligraphText text="AgroBox" :initial="true" /></span>
+        <span class="brand-name" data-label>Vobox</span>
       </div>
 
       <nav class="sidebar-nav">
@@ -80,6 +81,15 @@ const logout = async () => {
         >
           <span class="nav-icon"><LayoutDashboard :size="18" /></span>
           <span class="nav-label" data-label>Accueil</span>
+        </a>
+        <a
+          href="#"
+          class="nav-link"
+          :class="{ active: isActive('Assistant') }"
+          @click.prevent="goSection('Assistant')"
+        >
+          <span class="nav-icon"><Sparkles :size="18" /></span>
+          <span class="nav-label" data-label>Assistant IA</span>
         </a>
         <a
           href="#"
@@ -102,7 +112,7 @@ const logout = async () => {
         <a
           href="#"
           class="nav-link"
-          :class="{ active: isActive('Archive') }"
+          :class="{ active: isActive('Archive') || route.name === 'ProducerHistory' }"
           @click.prevent="goSection('Archive')"
         >
           <span class="nav-icon"><Archive :size="18" /></span>
@@ -117,6 +127,15 @@ const logout = async () => {
           <span class="nav-icon"><Database :size="18" /></span>
           <span class="nav-label" data-label>Données</span>
         </a>
+        <a
+          href="#"
+          class="nav-link"
+          :class="{ active: isActive('Guide') }"
+          @click.prevent="goSection('Guide')"
+        >
+          <span class="nav-icon"><BookOpenCheck :size="18" /></span>
+          <span class="nav-label" data-label>Guide</span>
+        </a>
       </nav>
 
       <div class="sidebar-footer">
@@ -124,9 +143,9 @@ const logout = async () => {
           <span class="user-avatar"><User :size="18" /></span>
           <div class="user-meta">
             <span class="user-name-text" data-label>{{ user?.name || 'Utilisateur' }}</span>
-            <span class="user-plan" data-label>{{ user?.email || 'Plan AgroBox' }}</span>
+            <span class="user-plan" data-label>{{ user?.email || 'Plan Vobox' }}</span>
           </div>
-          <button class="logout-btn" title="Déconnexion" @click="logout">
+          <button class="logout-btn" title="Déconnexion" aria-label="Déconnexion" @click="logout">
             <LogOut :size="16" />
           </button>
         </div>
@@ -135,11 +154,11 @@ const logout = async () => {
 
     <main class="shell-main">
       <router-view v-slot="{ Component }">
-        <transition name="page" mode="out-in">
-          <component :is="Component" :key="route.fullPath" />
-        </transition>
+        <component :is="Component" :key="route.fullPath" />
       </router-view>
     </main>
+    <GuideTour />
+    <UpdateDialog />
   </div>
 </template>
 
@@ -147,57 +166,35 @@ const logout = async () => {
 .app-shell {
   min-height: 100svh;
   display: flex;
-  gap: 18px;
-  padding: 16px;
+  gap: 12px;
+  padding: 12px;
   box-sizing: border-box;
-  background: var(--code-bg);
+  background: var(--surface);
 }
 
-/* ---------- Sidebar : carte flottante 3D ---------- */
+/* ---------- Sidebar : rail de navigation M3 ---------- */
 .sidebar {
   position: sticky;
-  top: 16px;
+  top: 12px;
   align-self: flex-start;
-  height: calc(100svh - 32px);
+  height: calc(100svh - 24px);
   width: 260px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 14px;
+  gap: 12px;
+  padding: 16px 12px;
   box-sizing: border-box;
-  background: linear-gradient(180deg, var(--bg) 0%, var(--social-bg) 100%);
-  border: 1px solid var(--border);
-  border-radius: 24px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 1px 2px rgba(0, 0, 0, 0.06),
-    0 12px 32px -8px rgba(0, 0, 0, 0.18),
-    0 32px 64px -24px rgba(0, 0, 0, 0.25);
-  transition: width 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
-}
-
-.sidebar:hover {
-  transform: translateY(-3px);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.09),
-    0 2px 4px rgba(0, 0, 0, 0.06),
-    0 18px 44px -8px rgba(0, 0, 0, 0.22),
-    0 44px 80px -24px rgba(0, 0, 0, 0.3);
-}
-
-.sidebar::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  background: var(--surface-container);
+  border: none;
+  border-radius: var(--shape-xl);
+  box-shadow: var(--elev-1);
+  transition: width 0.25s cubic-bezier(0.2, 0, 0, 1);
 }
 
 .sidebar.collapsed {
-  width: 72px;
-  padding: 16px 10px;
+  width: 80px;
+  padding: 16px 12px;
 }
 
 /* ---------- Brand ---------- */
@@ -209,18 +206,18 @@ const logout = async () => {
 }
 
 .brand-toggle {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 70%, #000 30%) 100%);
-  color: #fff;
+  background: var(--primary);
+  color: var(--on-primary);
   border: none;
-  border-radius: 12px;
+  border-radius: var(--shape-md);
   cursor: pointer;
-  box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--accent) 55%, transparent);
-  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  box-shadow: none;
+  transition: transform var(--motion);
 }
 
 .brand-toggle svg {
@@ -228,13 +225,11 @@ const logout = async () => {
 }
 
 .brand-toggle:hover {
-  transform: translateY(-1px) scale(1.05);
-  filter: brightness(1.06);
-  box-shadow: 0 6px 16px -2px color-mix(in srgb, var(--accent) 65%, transparent);
+  box-shadow: var(--elev-1);
 }
 
 .brand-toggle:active {
-  transform: scale(0.96);
+  transform: scale(0.94);
 }
 
 .sidebar.collapsed .brand-toggle svg {
@@ -242,9 +237,10 @@ const logout = async () => {
 }
 
 .brand-name {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 700;
-  color: var(--text-h);
+  letter-spacing: 0.1px;
+  color: var(--on-surface);
   white-space: nowrap;
   transition: opacity 0.2s ease;
 }
@@ -269,45 +265,30 @@ const logout = async () => {
 .nav-link {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border-radius: 12px;
-  color: var(--text);
+  gap: 12px;
+  height: 56px;
+  padding: 0 16px;
+  border-radius: var(--shape-full);
+  color: var(--on-surface-variant);
   text-decoration: none;
   font-size: 14px;
   font-weight: 500;
+  letter-spacing: 0.1px;
   position: relative;
-  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.nav-link::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%) scaleY(0);
-  width: 3px;
-  height: 60%;
-  border-radius: 3px;
-  background: var(--accent);
-  transition: transform 0.2s ease;
+  transition:
+    background var(--motion),
+    color var(--motion);
 }
 
 .nav-link:hover {
-  background: var(--accent-bg);
-  color: var(--text-h);
+  background: color-mix(in srgb, var(--on-surface) 8%, transparent);
+  color: var(--on-surface);
 }
 
 .nav-link.active {
-  background: var(--accent-bg);
-  color: var(--text-h);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 2px 8px rgba(0, 0, 0, 0.05);
-}
-
-.nav-link.active::before {
-  transform: translateY(-50%) scaleY(1);
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+  font-weight: 600;
 }
 
 .nav-icon {
@@ -315,11 +296,11 @@ const logout = async () => {
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  color: var(--accent);
+  color: var(--on-surface-variant);
 }
 
 .nav-link.active .nav-icon {
-  color: var(--accent);
+  color: var(--on-secondary-container);
 }
 
 .nav-label {
@@ -340,12 +321,11 @@ const logout = async () => {
 .sidebar-user {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.03);
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface-container-high);
+  border: none;
+  border-radius: var(--shape-full);
 }
 
 .user-avatar {
@@ -354,10 +334,10 @@ const logout = async () => {
   flex-shrink: 0;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 70%, #000 30%) 100%);
-  color: #fff;
-  box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--accent) 50%, transparent);
+  border-radius: var(--shape-full);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
+  font-weight: 600;
 }
 
 .user-meta {
@@ -392,15 +372,15 @@ const logout = async () => {
   place-items: center;
   background: none;
   border: none;
-  border-radius: 9px;
+  border-radius: var(--shape-full);
   color: var(--text);
   cursor: pointer;
-  transition: color 0.2s ease, background 0.2s ease;
+  transition: color var(--motion), background var(--motion);
 }
 
 .logout-btn:hover {
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.1);
+  color: var(--error);
+  background: var(--error-container);
 }
 
 /* ---------- Collapsed overrides ---------- */
@@ -455,29 +435,6 @@ const logout = async () => {
   overflow: hidden;
 }
 
-/* ---------- Page transitions ---------- */
-.page-enter-active,
-.page-leave-active {
-  transition: opacity 0.22s ease, transform 0.22s ease;
-}
-
-.page-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
-
-.page-leave-to {
-  opacity: 0;
-  transform: translateY(-10px);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .page-enter-active,
-  .page-leave-active {
-    transition: none;
-  }
-}
-
 /* ---------- Responsive ---------- */
 @media (max-width: 768px) {
   .sidebar:not(.collapsed) {
@@ -529,9 +486,16 @@ const logout = async () => {
     padding-top: 0;
   }
   .sidebar .brand-name,
-  .sidebar .user-meta,
-  .sidebar .logout-btn {
+  .sidebar .user-meta {
     display: none;
+  }
+  /* Le bouton déconnexion reste accessible : icône seule */
+  .sidebar .logout-btn {
+    display: grid;
+  }
+  .sidebar .sidebar-user {
+    flex-wrap: wrap;
+    row-gap: 6px;
   }
   .sidebar .brand-toggle svg {
     transform: rotate(180deg);

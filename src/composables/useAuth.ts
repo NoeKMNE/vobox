@@ -13,7 +13,7 @@ export interface Session {
   user: User
 }
 
-const TOKEN_KEY = 'agrobox_token'
+const TOKEN_KEY = 'Vobox_token'
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
@@ -27,8 +27,16 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
 }
 
-export function register(name: string, email: string, password: string): Promise<Session> {
-  return invoke<Session>('register', { name, email, password })
+export function register(name: string, email: string, password: string, telemetryConsent = false): Promise<Session> {
+  return invoke<Session>('register', { name, email, password, telemetryConsent })
+}
+
+export function getTelemetryConsent(): Promise<boolean> {
+  return invoke<boolean>('get_telemetry_consent')
+}
+
+export function setTelemetryConsent(enabled: boolean): Promise<void> {
+  return invoke('set_telemetry_consent', { enabled })
 }
 
 export function login(email: string, password: string): Promise<Session> {
@@ -92,6 +100,8 @@ export interface ImportResult {
   exploitations_added: number
   cultures_added: number
   unites_added: number
+  rows_updated: number
+  rows_deleted: number
   exploitations: Exploitation[]
   sheets: { name: string; rows: number; sample: string[][] }[]
 }
@@ -163,7 +173,7 @@ export interface ProduitStock {
   produit: string
   quantite_estimee_kg: number
   quantite_allouee_kg: number
-  quantite_disponible_kg: number
+  quantite_livrable_kg: number
   nb_exploitations: number
 }
 
@@ -178,6 +188,21 @@ export interface FicheItem {
   unites: Unite[]
 }
 
+export interface ProducteurFiche {
+  culture_id: number
+  exploitation: Exploitation
+  quantite_livrable_kg: number
+  participe_semaine: boolean
+}
+
+export function getInclureNouveaux(): Promise<boolean> {
+  return invoke<boolean>('get_inclure_nouveaux')
+}
+
+export function setInclureNouveaux(enabled: boolean): Promise<void> {
+  return invoke('set_inclure_nouveaux', { enabled })
+}
+
 export interface Fiche {
   id: number
   reference: string
@@ -188,6 +213,45 @@ export interface Fiche {
   statut: string
   created_at: string
   items: FicheItem[]
+}
+
+export interface ResteProduit {
+  produit: string
+  estime_kg: number
+  alloue_kg: number
+  reste_kg: number
+  nb_producteurs: number
+}
+
+export interface ResteProducteur {
+  exploitation_id: number
+  id_interne: string | null
+  operateur: string
+  produit: string
+  estime_kg: number
+  alloue_kg: number
+  reste_kg: number
+}
+
+export interface RapportSemestre {
+  semestre: string
+  annee: number
+  debut: string
+  fin: string
+  estime_kg: number
+  alloue_kg: number
+  reste_kg: number
+  par_produit: ResteProduit[]
+  par_producteur: ResteProducteur[]
+  cloture_le: string | null
+}
+
+export function rapportSemestre(token: string, semestre: string, annee: number): Promise<RapportSemestre> {
+  return invoke<RapportSemestre>('rapport_semestre', { token, semestre, annee })
+}
+
+export function cloturerSemestre(token: string, semestre: string, annee: number): Promise<number> {
+  return invoke<number>('cloturer_semestre', { token, semestre, annee })
 }
 
 export interface FicheSummary {
@@ -211,10 +275,53 @@ export function genererFiche(
   return invoke<Fiche>('generer_fiche', { token, produit, quantiteKg, titre })
 }
 
+export function producteursPourFiche(token: string, produit: string): Promise<ProducteurFiche[]> {
+  return invoke<ProducteurFiche[]>('producteurs_pour_fiche', { token, produit })
+}
+
+export function genererFicheManuelle(
+  token: string,
+  produit: string,
+  allocations: Array<[number, number]>,
+  titre?: string
+): Promise<Fiche> {
+  return invoke<Fiche>('generer_fiche_manuelle', { token, produit, allocations, titre })
+}
+
 export function listFiches(token: string): Promise<FicheSummary[]> {
   return invoke<FicheSummary[]>('list_fiches', { token })
 }
 
 export function getFiche(token: string, id: number): Promise<Fiche> {
   return invoke<Fiche>('get_fiche', { token, id })
+}
+
+export interface ParticipationProducteur {
+  fiche_id: number
+  reference: string
+  titre: string
+  produit: string
+  statut: string
+  created_at: string
+  quantite_kg: number
+}
+
+export interface HistoriqueProducteur {
+  total_kg: number
+  nb_participations: number
+  participations: ParticipationProducteur[]
+}
+
+export function historiqueProducteur(token: string, exploitationId: number): Promise<HistoriqueProducteur> {
+  return invoke<HistoriqueProducteur>('historique_producteur', { token, exploitationId })
+}
+
+export interface ResumeParticipation {
+  exploitation_id: number
+  nb_participations: number
+  total_kg: number
+}
+
+export function producteursParticipants(token: string): Promise<ResumeParticipation[]> {
+  return invoke<ResumeParticipation[]>('producteurs_participants', { token })
 }

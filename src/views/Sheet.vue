@@ -2,15 +2,19 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, CheckCircle2, FileUp, Info, Loader, MapPin, Printer, QrCode as QrCodeIcon } from '@lucide/vue'
-import CalligraphText from '../components/CalligraphText.vue'
 import QrCode from '../components/QrCode.vue'
+import watermarkUrl from '../assets/watermark.jpg'
 import {
   genererFiche,
+  genererFicheManuelle,
   getFiche,
   getToken,
+  producteursPourFiche,
   produitsDisponibles,
+  type Exploitation,
   type Fiche,
   type FicheItem,
+  type ProducteurFiche,
   type ProduitStock
 } from '../composables/useAuth'
 
@@ -25,31 +29,58 @@ const today = new Intl.DateTimeFormat('fr-FR', {
 
 const TITRE_DEFAUT = 'Fiche de traçabilité produit'
 
+const mode = ref<'auto' | 'manuel'>('auto')
 const produits = ref<ProduitStock[]>([])
 const produit = ref('')
-const tonnes = ref<number | null>(20)
+const kg = ref<number | null>(20000)
 const titre = ref(TITRE_DEFAUT)
+const producteurs = ref<ProducteurFiche[]>([])
+const quantites = ref<Record<number, number | null>>({})
 const fiche = ref<Fiche | null>(null)
 const loading = ref(false)
 const generating = ref(false)
 const reloading = ref(false)
+const chargeProducteurs = ref(false)
 const error = ref('')
 
-const kgDemandes = computed(() => (tonnes.value && tonnes.value > 0 ? tonnes.value * 1000 : null))
+const kgDemandes = computed(() => (kg.value && kg.value > 0 ? kg.value : null))
 const produitDispo = computed(() => produits.value.find((p) => p.produit === produit.value))
 const statutLabel = computed(() => (fiche.value?.statut === 'complete' ? 'Commande complète' : 'Commande partielle'))
+
+const totalManuel = computed(() =>
+  producteurs.value.reduce((acc, p) => acc + (quantites.value[p.culture_id] ?? 0), 0)
+)
+const hasManuel = computed(() => totalManuel.value > 0)
+
+const generateDisabled = computed(() => {
+  if (generating.value || !produit.value || !produits.value.length) return true
+  if (mode.value === 'auto') return kgDemandes.value == null || kgDemandes.value <= 0
+  return chargeProducteurs.value || !hasManuel.value
+})
 
 const formatNum = (n: number | null | undefined, digits = 0) =>
   n == null ? '—' : new Intl.NumberFormat('fr-FR', { maximumFractionDigits: digits }).format(n)
 
 const formatKg = (kg: number) => {
+  if (kg < 1000) return `${formatNum(Math.round(kg))} kg`
   const tonnesVal = kg / 1000
   const arrondi = Math.round(tonnesVal * 100) / 100
   return `${formatNum(arrondi)} t (${formatNum(Math.round(kg))} kg)`
 }
 
-const nomProducteur = (item: FicheItem) => {
-  const e = item.exploitation
+const SAC_KG = 65
+
+const decomposerSacs = (kg: number) => {
+  const entiers = Math.floor(kg / SAC_KG)
+  const reste = Math.round(kg - entiers * SAC_KG)
+  return { entiers, reste }
+}
+
+const sacsDecomp = computed(() => decomposerSacs(fiche.value?.quantite_demandee_kg ?? 0))
+
+const nomProducteur = (item: FicheItem) => nomExploitation(item.exploitation)
+
+const nomExploitation = (e: Exploitation) => {
   const nom = [e.operateur_prenom, e.operateur_nom].filter(Boolean).join(' ')
   return nom || [e.proprietaire_prenom, e.proprietaire_nom].filter(Boolean).join(' ') || 'Non renseigné'
 }
@@ -59,10 +90,10 @@ const telephoneProducteur = (item: FicheItem) => {
   return e.operateur_telephone || e.proprietaire_telephone || null
 }
 
-const localisationProducteur = (item: FicheItem) => {
-  const e = item.exploitation
-  return [e.village, e.district, e.region_inspection].filter(Boolean).join(' · ') || '—'
-}
+const localisationProducteur = (item: FicheItem) => localisationExploitation(item.exploitation)
+
+const localisationExploitation = (e: Exploitation) =>
+  [e.village, e.district, e.region_inspection].filter(Boolean).join(' · ') || '—'
 
 const coordonnees = (u: { latitude: number | null; longitude: number | null }) =>
   u.latitude != null && u.longitude != null
@@ -83,7 +114,7 @@ const qrPayload = (item: FicheItem) => {
   if (!f) return ''
   const e = item.exploitation
   return [
-    'AGROBOX · FICHE DE TRACABILITÉ',
+    'Vobox · FICHE DE TRACABILITÉ',
     `FICHE: ${f.reference}`,
     `PRODUIT: ${f.produit}`,
     `QUANTITÉ ALLOUÉE: ${formatNum(Math.round(item.quantite_kg))} kg`,
@@ -112,7 +143,7 @@ const load = async () => {
   try {
     produits.value = await produitsDisponibles(token)
     if (!produit.value && produits.value.length) {
-      const first = [...produits.value].sort((a, b) => b.quantite_disponible_kg - a.quantite_disponible_kg)[0]
+      const first = [...produits.value].sort((a, b) => b.quantite_livrable_kg - a.quantite_livrable_kg)[0]
       produit.value = first.produit
     }
   } catch (e) {
@@ -131,6 +162,45 @@ const generer = async () => {
     fiche.value = await genererFiche(token, produit.value, kgDemandes.value, titre.value.trim() || undefined)
     router.replace({ query: {} })
     await load()
+  } catch (e) {
+    error.value = typeof e === 'string' ? e : 'Génération impossible'
+  } finally {
+    generating.value = false
+  }
+}
+
+const loadProducteurs = async () => {
+  const token = getToken()
+  if (!token || !produit.value) {
+    producteurs.value = []
+    quantites.value = {}
+    return
+  }
+  chargeProducteurs.value = true
+  try {
+    producteurs.value = await producteursPourFiche(token, produit.value)
+    quantites.value = {}
+    for (const p of producteurs.value) quantites.value[p.culture_id] = null
+  } catch (e) {
+    error.value = typeof e === 'string' ? e : 'Chargement des producteurs impossible'
+  } finally {
+    chargeProducteurs.value = false
+  }
+}
+
+const genererManuel = async () => {
+  const token = getToken()
+  if (!token || !produit.value || !hasManuel.value) return
+  generating.value = true
+  error.value = ''
+  try {
+    const allocations: Array<[number, number]> = producteurs.value
+      .map((p) => [p.culture_id, quantites.value[p.culture_id]])
+      .filter((pair): pair is [number, number] => typeof pair[1] === 'number' && pair[1] > 0)
+    fiche.value = await genererFicheManuelle(token, produit.value, allocations, titre.value.trim() || undefined)
+    router.replace({ query: {} })
+    await load()
+    await loadProducteurs()
   } catch (e) {
     error.value = typeof e === 'string' ? e : 'Génération impossible'
   } finally {
@@ -164,6 +234,13 @@ watch(fiche, () => {
   if (fiche.value) window.scrollTo({ top: 0 })
 })
 
+watch(
+  () => [mode.value, produit.value] as const,
+  () => {
+    if (mode.value === 'manuel') loadProducteurs()
+  }
+)
+
 onMounted(() => {
   load()
   const id = Number(route.query.id)
@@ -177,7 +254,7 @@ onMounted(() => {
   <div class="sheet-page">
     <header class="page-header">
       <div class="page-header-text">
-        <h1><CalligraphText text="Fiche" :initial="true" /></h1>
+        <h1>Fiche</h1>
         <p>Fiche de traçabilité produit pour une commande client</p>
       </div>
       <div class="header-actions">
@@ -186,7 +263,7 @@ onMounted(() => {
           <ArrowLeft :size="15" />
           <span>Retour</span>
         </button>
-        <button v-if="fiche" class="print-btn" title="Imprimer la fiche" @click="imprimer">
+        <button v-if="fiche" class="print-btn print-btn-primary" title="Imprimer la fiche" @click="imprimer">
           <Printer :size="15" />
           <span>Imprimer</span>
         </button>
@@ -206,26 +283,40 @@ onMounted(() => {
           </div>
         </div>
 
+        <div class="order-modes">
+          <div class="mode-toggle">
+            <button type="button" :class="['mode-btn', { active: mode === 'auto' }]" @click="mode = 'auto'">
+              Répartition auto
+            </button>
+            <button type="button" :class="['mode-btn', { active: mode === 'manuel' }]" @click="mode = 'manuel'">
+              Édition manuelle
+            </button>
+          </div>
+          <p v-if="mode === 'manuel'" class="mode-hint">
+            Choisissez les producteurs et saisissez les quantités ; la fiche est générée avec exactement cette répartition.
+          </p>
+        </div>
+
         <div class="order-fields">
           <label class="field">
             <span class="field-label">Produit</span>
             <select v-model="produit" class="field-input" :disabled="loading || !produits.length">
               <option v-if="!produits.length" value="">Aucun produit importé</option>
               <option v-for="p in produits" :key="p.produit" :value="p.produit">
-                {{ p.produit }} — {{ formatKg(p.quantite_disponible_kg) }} dispo
+                {{ p.produit }} — {{ formatKg(p.quantite_livrable_kg) }} livrables
               </option>
             </select>
           </label>
 
-          <label class="field">
-            <span class="field-label">Quantité (tonnes)</span>
+          <label v-if="mode === 'auto'" class="field">
+            <span class="field-label">Quantité (kg)</span>
             <input
-              v-model.number="tonnes"
+              v-model.number="kg"
               type="number"
               min="0"
-              step="0.5"
+              step="1"
               class="field-input"
-              placeholder="ex. 20"
+              placeholder="ex. 20000"
             />
           </label>
 
@@ -240,27 +331,62 @@ onMounted(() => {
             />
           </label>
 
-          <button v-if="produits.length" class="generate-btn" :disabled="generating || !produit || kgDemandes == null || kgDemandes <= 0" @click="generer">
+          <button class="generate-btn" :disabled="generateDisabled" @click="mode === 'auto' ? generer() : genererManuel()">
             <Loader v-if="generating" class="spin" :size="16" />
             <template v-else>Générer la fiche</template>
           </button>
         </div>
 
+        <div v-if="mode === 'manuel'" class="manual-block">
+          <div class="manual-head">
+            <span>Producteurs disponibles pour <b>{{ produit || '—' }}</b></span>
+            <span class="manual-total">Total : {{ formatKg(totalManuel) }}</span>
+          </div>
+          <p v-if="chargeProducteurs" class="manual-empty">Chargement des producteurs…</p>
+          <p v-else-if="!producteurs.length" class="manual-empty">
+            Aucun producteur avec des quantités livrables pour ce produit.
+          </p>
+          <div v-else class="manual-list">
+            <div v-for="p in producteurs" :key="p.culture_id" class="producer-pick">
+              <div class="pp-main">
+                <span class="pp-name">{{ nomExploitation(p.exploitation) }}</span>
+                <span class="pp-id">
+                  ID : {{ p.exploitation.id_interne || p.exploitation.id }} · {{ localisationExploitation(p.exploitation) }}
+                </span>
+              </div>
+              <span v-if="p.participe_semaine" class="pp-warn" title="Ce producteur a déjà été affecté à une commande cette semaine.">
+                <CheckCircle2 :size="11" />
+                Déjà affecté cette semaine
+              </span>
+              <span class="pp-dispo">Livrable : {{ formatKg(p.quantite_livrable_kg) }}</span>
+              <input
+                v-model.number="quantites[p.culture_id]"
+                type="number"
+                min="0"
+                step="1"
+                class="field-input pp-input"
+                placeholder="kg"
+              />
+            </div>
+          </div>
+        </div>
+
         <div v-if="produitDispo" class="order-info">
           <Info :size="14" />
           <span>
-            Disponible : <b>{{ formatKg(produitDispo.quantite_disponible_kg) }}</b>
+            Livrable cette saison : <b>{{ formatKg(produitDispo.quantite_livrable_kg) }}</b>
             chez {{ produitDispo.nb_exploitations }} producteur{{ produitDispo.nb_exploitations > 1 ? 's' : '' }}
-            (estimé {{ formatKg(produitDispo.quantite_estimee_kg) }} − alloué {{ formatKg(produitDispo.quantite_allouee_kg) }})
+            (estimation {{ formatKg(produitDispo.quantite_estimee_kg) }} − alloué {{ formatKg(produitDispo.quantite_allouee_kg) }})
           </span>
         </div>
       </section>
 
       <!-- ---------- Document de traçabilité ---------- -->
       <section v-if="fiche" class="fiche-doc">
+        <img class="doc-watermark" :src="watermarkUrl" alt="" aria-hidden="true" />
         <div class="doc-head">
           <div class="doc-band">
-            <span class="doc-eyebrow">AgroBox · Traçabilité produit</span>
+            <span class="doc-eyebrow">Vobox · Traçabilité produit</span>
             <h2 class="doc-title">{{ fiche.titre }}</h2>
           </div>
           <div class="doc-meta">
@@ -271,7 +397,7 @@ onMounted(() => {
 
         <div class="doc-order">
           <div class="doc-field">
-            <span>Produit commandé</span>
+            <span>Type de produit</span>
             <b>{{ fiche.produit }}</b>
           </div>
           <div class="doc-field">
@@ -282,7 +408,23 @@ onMounted(() => {
             <span>Quantité affectée</span>
             <b>{{ formatKg(fiche.quantite_attribuee_kg) }}</b>
           </div>
-          <div class="doc-field">
+          <div class="doc-field doc-field-sacs">
+            <span>Sacs (1 sac = {{ SAC_KG }} kg)</span>
+            <div class="sacs-hero">
+              <b v-if="sacsDecomp.entiers > 0" class="sacs-count"
+                >{{ formatNum(sacsDecomp.entiers) }}
+                <small>sac{{ sacsDecomp.entiers > 1 ? 's' : '' }}</small></b
+              >
+              <b v-else class="sacs-count"
+                >{{ sacsDecomp.reste > 0 ? formatNum(sacsDecomp.reste) : '0' }}
+                <small>{{ sacsDecomp.reste > 0 ? 'kg' : 'sac' }}</small></b
+              >
+              <span v-if="sacsDecomp.entiers > 0 && sacsDecomp.reste > 0" class="sacs-reste"
+                >+ {{ formatNum(sacsDecomp.reste) }} kg</span
+              >
+            </div>
+          </div>
+          <div class="doc-field doc-field-statut">
             <span>Statut</span>
             <b :class="['doc-status', fiche.statut]">
               <CheckCircle2 :size="13" />
@@ -302,7 +444,7 @@ onMounted(() => {
 
         <div v-for="(item, i) in fiche.items" :key="item.culture_id" class="producer-row">
           <div class="producer-qr">
-            <QrCode :value="qrPayload(item)" :size="56" />
+            <QrCode :value="qrPayload(item)" :size="93" />
           </div>
 
           <div class="producer-main">
@@ -322,7 +464,7 @@ onMounted(() => {
         </div>
 
         <p class="doc-footer">
-          Fiche générée par AgroBox — chaque quantité affectée est verrouillée pour garantir l'unicité de la production.
+          Fiche générée par Vobox — chaque quantité affectée est verrouillée pour garantir l'unicité de la production.
         </p>
       </section>
     </div>
@@ -349,7 +491,7 @@ onMounted(() => {
 }
 
 .page-header h1 {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-h);
   margin: 0 0 4px;
@@ -400,6 +542,19 @@ onMounted(() => {
   color: var(--accent);
 }
 
+.print-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-primary);
+  box-shadow: 0 8px 16px -8px var(--accent);
+}
+
+.print-btn-primary:hover {
+  border-color: var(--accent);
+  color: var(--on-primary);
+  filter: brightness(1.08);
+}
+
 .sheet-scroll {
   flex: 1;
   min-height: 0;
@@ -417,7 +572,7 @@ onMounted(() => {
 }
 
 .msg.error {
-  color: #dc2626;
+  color: var(--error);
   background: rgba(220, 38, 38, 0.08);
   border: 1px solid rgba(220, 38, 38, 0.25);
 }
@@ -425,10 +580,10 @@ onMounted(() => {
 /* ---------- Carte commande ---------- */
 .order-card,
 .fiche-doc {
-  background: linear-gradient(180deg, var(--bg) 0%, rgba(255, 255, 255, 0.5) 100%);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  background: var(--surface-container-low);
+  border: none;
+  border-radius: var(--shape-lg);
+  box-shadow: var(--elev-1);
   padding: 18px;
 }
 
@@ -514,13 +669,15 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 18px;
-  border-radius: 12px;
+  height: 48px;
+  padding: 0 24px;
+  border-radius: var(--shape-full);
   border: none;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 70%, #000 30%) 100%);
-  color: #fff;
+  background: var(--primary);
+  color: var(--on-primary);
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: 0.1px;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
@@ -544,6 +701,148 @@ onMounted(() => {
   color: var(--text);
 }
 
+.order-modes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 2px;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.mode-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.mode-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.manual-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.manual-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--text);
+  padding: 0 2px;
+}
+
+.manual-head b {
+  color: var(--text-h);
+  text-transform: capitalize;
+}
+
+.manual-total {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.manual-empty {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.manual-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.producer-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.pp-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pp-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.pp-id {
+  font-size: 11px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pp-dispo {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pp-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.14);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.pp-input {
+  width: 110px;
+  min-width: 90px;
+  padding: 6px 10px;
+  font-size: 13px;
+  text-align: right;
+}
+
 .order-info svg {
   color: var(--accent);
   flex-shrink: 0;
@@ -561,8 +860,25 @@ onMounted(() => {
 
 /* ---------- Document ---------- */
 .fiche-doc {
+  position: relative;
   animation: cardIn 0.4s ease both;
   overflow: hidden;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.doc-watermark {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0.1;
+  pointer-events: none;
+  z-index: 0;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
 }
 
 @keyframes cardIn {
@@ -582,12 +898,8 @@ onMounted(() => {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  padding: 22px 24px;
-  background: linear-gradient(
-    135deg,
-    var(--accent) 0%,
-    color-mix(in srgb, var(--accent) 60%, #064e3b 40%) 100%
-  );
+  padding: 14px 18px;
+  background: var(--accent);
   color: #fff;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
@@ -596,30 +908,30 @@ onMounted(() => {
 .doc-band {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
   min-width: 0;
 }
 
 .doc-eyebrow {
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.85);
+  color: rgba(255, 255, 255, 0.92);
 }
 
 .doc-title {
   margin: 0;
-  font-size: clamp(24px, 3.4vw, 32px);
-  font-weight: 800;
+  font-size: clamp(18px, 2.6vw, 24px);
+  font-weight: 700;
   color: #fff;
-  line-height: 1.15;
+  line-height: 1.2;
   letter-spacing: -0.01em;
 }
 
 .doc-meta {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -629,20 +941,19 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.14);
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 12px;
-  font-size: 12.5px;
-  font-weight: 700;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .doc-meta span {
-  font-size: 10px;
+  font-size: 9.5px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.75);
-  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  font-weight: 500;
 }
 
 .doc-meta b {
@@ -651,86 +962,123 @@ onMounted(() => {
 
 .doc-order {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px;
-  padding: 12px 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  padding: 12px 0 4px;
 }
 
 .doc-field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  background: linear-gradient(180deg, var(--bg) 0%, rgba(255, 255, 255, 0.55) 100%);
+  gap: 2px;
+  justify-content: center;
+  padding: 8px 10px;
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 12px;
+  border-radius: 8px;
+}
+
+.doc-field-statut {
+  grid-column: 1 / -1;
 }
 
 .doc-field span {
-  font-size: 10.5px;
+  font-size: 9.5px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--text);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .doc-field b {
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-h);
   text-transform: capitalize;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-field-sacs .sacs-hero {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.doc-field-sacs .sacs-count {
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.doc-field-sacs .sacs-count small {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.doc-field-sacs .sacs-reste {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-h);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  padding: 1px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .doc-status {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 12.5px;
+  font-size: 12px;
   width: fit-content;
-  padding: 3px 10px;
+  padding: 2px 10px;
   border-radius: 999px;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
 }
 
 .doc-status.complete {
-  color: #16a34a;
-  background: rgba(34, 197, 94, 0.14);
-  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: var(--success, #16a34a);
+  background: color-mix(in srgb, var(--success, #16a34a) 12%, transparent);
 }
 
 .doc-status.partielle {
-  color: #d97706;
-  background: rgba(245, 158, 11, 0.16);
-  border: 1px solid rgba(245, 158, 11, 0.4);
+  color: var(--warning, #b45309);
+  background: color-mix(in srgb, var(--warning, #b45309) 14%, transparent);
 }
 
 .doc-note {
-  margin: 0 0 6px;
-  font-size: 12.5px;
-  color: #d97706;
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.25);
-  border-radius: 10px;
-  padding: 9px 12px;
+  margin: 8px 0 2px;
+  font-size: 12px;
+  color: var(--warning, #b45309);
+  background: color-mix(in srgb, var(--warning, #b45309) 8%, transparent);
+  border-radius: 8px;
+  padding: 8px 12px;
 }
 
 .doc-section {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 12px 0 8px;
-  font-size: 15px;
-  font-weight: 700;
+  margin: 14px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
   color: var(--text-h);
 }
 
 .doc-count {
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--accent);
   background: var(--accent-bg);
-  padding: 2px 9px;
+  padding: 1px 8px;
   border-radius: 999px;
 }
 
@@ -739,19 +1087,17 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
-  background: linear-gradient(180deg, var(--bg) 0%, rgba(255, 255, 255, 0.6) 100%);
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  border-radius: 14px;
+  border-radius: 10px;
   margin-bottom: 6px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .producer-qr {
   flex-shrink: 0;
-  padding: 6px;
+  padding: 5px;
   background: #fff;
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: inset 0 0 0 1px var(--border);
 }
 
@@ -769,39 +1115,40 @@ onMounted(() => {
 
 .producer-num {
   font-family: 'Courier New', monospace;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 70%, #000 30%) 100%);
-  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-bg);
+  padding: 1px 7px;
   border-radius: 999px;
 }
 
 .producer-id {
   font-family: 'Courier New', monospace;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-h);
 }
 
 .producer-qty {
   margin-left: auto;
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-h);
+  white-space: nowrap;
 }
 
 .producer-name {
-  margin: 3px 0 2px;
-  font-size: 14px;
-  font-weight: 700;
+  margin: 2px 0 1px;
+  font-size: 13px;
+  font-weight: 600;
   color: var(--text-h);
 }
 
 .producer-lines {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .producer-line {
@@ -809,7 +1156,7 @@ onMounted(() => {
   align-items: center;
   gap: 6px;
   margin: 0;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text);
 }
 
@@ -820,16 +1167,20 @@ onMounted(() => {
 
 .doc-footer {
   margin: 10px 0 0;
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text);
   border-top: 1px dashed var(--border);
-  padding-top: 10px;
+  padding-top: 8px;
 }
 
 @media (max-width: 600px) {
   .page-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .doc-order {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .page-header-text {

@@ -1,15 +1,14 @@
 import { ref } from 'vue'
 
-export type Theme = 'light' | 'dark' | 'mono' | 'tropical' | 'emerald'
+export type Theme = 'light' | 'dark' | 'mono' | 'bleu' | 'neon'
 
-const STORAGE_KEY = 'agrobox_theme'
-const THEMES: Theme[] = ['light', 'dark', 'mono', 'tropical', 'emerald']
+const STORAGE_KEY = 'Vobox_theme'
+const THEMES: Theme[] = ['light', 'dark', 'mono', 'bleu', 'neon']
 
 function getInitialTheme(): Theme {
   const stored = localStorage.getItem(STORAGE_KEY) as Theme | null
   if (stored && THEMES.includes(stored)) return stored
-  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-  return prefersDark ? 'dark' : 'light'
+  return 'neon'
 }
 
 const currentTheme = ref<Theme>(getInitialTheme())

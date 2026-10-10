@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { LayoutDashboard, Leaf, Sprout, TrendingUp } from '@lucide/vue'
-import CalligraphText from '../CalligraphText.vue'
 import TiltCard from './TiltCard.vue'
 
 defineProps<{
@@ -24,12 +23,10 @@ const features = [
         <div class="hero-icon">
           <Leaf :size="34" />
         </div>
-        <h1><CalligraphText text="Bienvenue sur AgroBox" :initial="true" /></h1>
+        <h1>Bienvenue sur Vobox</h1>
         <p class="hero-text">
-          <CalligraphText
-            text="Votre assistant intelligent pour la gestion agricole. Suivez vos cultures, optimisez vos rendements et prenez de meilleures décisions."
-            :initial="true"
-          />
+          Votre assistant intelligent pour la gestion agricole. Suivez vos cultures, optimisez vos
+          rendements et prenez de meilleures décisions.
         </p>
       </div>
     </TiltCard>
@@ -65,16 +62,7 @@ const features = [
 }
 
 .hero-glow {
-  position: absolute;
-  top: -80px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 300px;
-  height: 200px;
-  border-radius: 999px;
-  background: radial-gradient(closest-side, var(--accent-bg), transparent);
-  filter: blur(18px);
-  pointer-events: none;
+  display: none;
 }
 
 .hero-icon {
@@ -84,16 +72,13 @@ const features = [
   margin: 20px auto 18px;
   display: grid;
   place-items: center;
-  border-radius: 22px;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 65%, #000 35%) 100%);
-  color: #fff;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    0 12px 28px -6px color-mix(in srgb, var(--accent) 65%, transparent);
+  border-radius: var(--shape-xl);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 
 h1 {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-h);
   margin: 0 0 12px;

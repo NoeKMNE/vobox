@@ -1,5 +1,5 @@
 {
-  "name": "agrobox-app",
+  "name": "vobox",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -11,20 +11,14 @@
   "dependencies": {
     "@lucide/vue": "^1.47.0",
     "@tauri-apps/api": "^2.11.1",
-    "calligraph": "^1.4.1",
-    "gsap": "^3.15.0",
-    "motion": "^13.4.2",
     "qrcode": "^1.5.4",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
     "vue": "^3.5.42",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.0",
     "@types/node": "^24.13.3",
     "@types/qrcode": "^1.5.6",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",
     "typescript": "~6.0.2",

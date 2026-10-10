@@ -36,6 +36,11 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/MainScreen.vue')
       },
       {
+        path: 'assistant',
+        name: 'Assistant',
+        component: () => import('../views/Assistant.vue')
+      },
+      {
         path: 'settings',
         name: 'Settings',
         component: () => import('../views/Settings.vue')
@@ -56,10 +61,25 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../views/Archive.vue')
       },
       {
+        path: 'archive/producteur',
+        name: 'ProducerHistory',
+        component: () => import('../views/ProducerHistory.vue')
+      },
+      {
+        path: 'rapport-semestre',
+        name: 'RapportSemestre',
+        component: () => import('../views/RapportSemestre.vue')
+      },
+      {
         path: 'exploitation/:id',
         name: 'Exploitation',
         component: () => import('../views/ExploitationView.vue'),
         props: true
+      },
+      {
+        path: 'guide',
+        name: 'Guide',
+        component: () => import('../views/Guide.vue')
       }
     ]
   }

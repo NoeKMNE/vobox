@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { Camera, Shield } from '@lucide/vue'
-import CalligraphText from '../components/CalligraphText.vue'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { Camera, Shield, Trash2, TriangleAlert } from '@lucide/vue'
 import { useTheme, type Theme } from '../composables/useTheme'
-import { customCursorEnabled, setCustomCursor } from '../composables/useCursor'
-import { getSession, getToken, updateAvatar, updateProfile } from '../composables/useAuth'
+import { checkForUpdate, updateError, updateStatus } from '../composables/useUpdater'
+import { getVersion } from '@tauri-apps/api/app'
+import { getInclureNouveaux, getSession, getTelemetryConsent, getToken, resetData, setInclureNouveaux, setTelemetryConsent, updateAvatar, updateProfile } from '../composables/useAuth'
 
 const { currentTheme, setTheme } = useTheme()
 
@@ -16,6 +16,90 @@ const saving = ref(false)
 const saveMessage = ref('')
 const saveError = ref('')
 const fileInput = ref<HTMLInputElement | null>(null)
+
+const appVersion = ref('')
+
+const telemetryEnabled = ref(false)
+const telemetrySaving = ref(false)
+
+const inclureNouveaux = ref(true)
+const inclureNouveauxSaving = ref(false)
+
+const toggleInclureNouveaux = async () => {
+  const next = !inclureNouveaux.value
+  inclureNouveauxSaving.value = true
+  try {
+    await setInclureNouveaux(next)
+    inclureNouveaux.value = next
+  } catch {
+    // le toggle reste sur son état précédent
+  } finally {
+    inclureNouveauxSaving.value = false
+  }
+}
+
+const toggleTelemetry = async () => {
+  const next = !telemetryEnabled.value
+  telemetrySaving.value = true
+  try {
+    await setTelemetryConsent(next)
+    telemetryEnabled.value = next
+  } catch {
+    // le toggle reste sur son état précédent
+  } finally {
+    telemetrySaving.value = false
+  }
+}
+
+const showDanger = ref(false)
+const countdown = ref(0)
+const deleting = ref(false)
+const dangerDone = ref('')
+const dangerError = ref('')
+const COMPTE_REBOURS = 10
+let dangerTimer: ReturnType<typeof setInterval> | null = null
+
+const stopDangerTimer = () => {
+  if (dangerTimer) {
+    clearInterval(dangerTimer)
+    dangerTimer = null
+  }
+}
+
+const openDanger = () => {
+  showDanger.value = true
+  deleting.value = false
+  dangerDone.value = ''
+  dangerError.value = ''
+  countdown.value = COMPTE_REBOURS
+  stopDangerTimer()
+  dangerTimer = setInterval(() => {
+    countdown.value -= 1
+    if (countdown.value <= 0) stopDangerTimer()
+  }, 1000)
+}
+
+const closeDanger = () => {
+  stopDangerTimer()
+  showDanger.value = false
+}
+
+const confirmDanger = async () => {
+  const token = getToken()
+  if (!token || countdown.value > 0 || deleting.value) return
+  deleting.value = true
+  dangerError.value = ''
+  try {
+    await resetData(token)
+    dangerDone.value = 'Toutes les données ont été supprimées.'
+  } catch (e) {
+    dangerError.value = typeof e === 'string' ? e : e instanceof Error ? e.message : 'Suppression impossible'
+  } finally {
+    deleting.value = false
+  }
+}
+
+onUnmounted(stopDangerTimer)
 
 const initials = () => {
   const name = profile.value?.name?.trim() || 'A'
@@ -35,6 +119,15 @@ onMounted(async () => {
   } catch {
     profile.value = null
   }
+  getVersion()
+    .then((v) => (appVersion.value = v))
+    .catch(() => {})
+  getTelemetryConsent()
+    .then((v) => (telemetryEnabled.value = v))
+    .catch(() => {})
+  getInclureNouveaux()
+    .then((v) => (inclureNouveaux.value = v))
+    .catch(() => {})
 })
 
 const saveProfile = async () => {
@@ -93,13 +186,8 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   { value: 'light', label: 'Clair', description: 'Fond blanc, teintes vives', swatch: ['#ffffff', '#aa3bff'] },
   { value: 'dark', label: 'Sombre', description: 'Fond sombre reposant', swatch: ['#16171d', '#c084fc'] },
   { value: 'mono', label: 'Noir & Blanc', description: 'Monochrome élégant', swatch: ['#ffffff', '#000000'] },
-  { value: 'tropical', label: 'Tropical', description: 'Vert végétal et ensoleillé', swatch: ['#f7fbf2', '#0ea86a'] },
-  {
-    value: 'emerald',
-    label: 'Émeraude',
-    description: 'Vert profond et ambre',
-    swatch: ['#f8faf7', 'linear-gradient(90deg, #16a36a 0%, #62e6a5 55%, #f2a93b 100%)']
-  }
+  { value: 'bleu', label: 'Bleu', description: 'Océan frais et serein', swatch: ['#f5f9fd', '#1c7ed6'] },
+  { value: 'neon', label: 'Néon', description: 'Dark agritech, accents néon', swatch: ['#070b12', '#00e5ff'] }
 ]
 </script>
 
@@ -107,8 +195,8 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   <div class="settings">
     <header class="page-header">
       <div class="page-header-text">
-        <h1><CalligraphText text="Paramètres" :initial="true" /></h1>
-        <p>Personnalisez votre expérience AgroBox</p>
+        <h1>Paramètres</h1>
+        <p>Personnalisez votre expérience Vobox</p>
       </div>
     </header>
 
@@ -146,22 +234,108 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
               </div>
             </button>
           </div>
-          <div class="notif-card cursor-card">
+          <div class="notif-card update-card">
+            <div class="update-head">
+              <strong>Mises à jour automatiques</strong>
+              <small>Une fenêtre vous prévient quand une nouvelle version stable est disponible.</small>
+            </div>
             <div class="notif-row">
               <div class="notif-meta">
-                <strong>Curseur personnalisé</strong>
-                <small
-                  >Flèche aux couleurs de votre accent — désactivé : curseur Windows par défaut</small
-                >
+                <strong>Canal de mise à jour</strong>
+                <small>Stable — versions testées uniquement</small>
+              </div>
+              <span class="channel-badge">Stable</span>
+            </div>
+            <div class="notif-row">
+              <div class="notif-meta">
+                <strong>Vérifier maintenant</strong>
+                <small v-if="updateStatus === 'uptodate'" class="ok-text">Vous êtes à jour.</small>
+                <small v-else-if="updateStatus === 'checking'">Vérification en cours…</small>
+                <small v-else-if="updateStatus === 'error'">{{ updateError || 'Vérification impossible' }}</small>
+                <small v-else>Vérifiée automatiquement à chaque lancement</small>
+              </div>
+              <button
+                class="check-btn"
+                :disabled="updateStatus === 'checking' || updateStatus === 'downloading'"
+                @click="checkForUpdate(true)"
+              >
+                Vérifier
+              </button>
+            </div>
+            <div class="version-row">
+              <span>Version installée</span>
+              <code>v{{ appVersion }}</code>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h2>Télémétrie et confidentialité</h2>
+          <div class="notif-card">
+            <div class="notif-row">
+              <div class="notif-meta">
+                <strong>Données d’usage anonymisées</strong>
+                <small>Ouvertures, imports (nombres), fiches (statut). Jamais : mot de passe, contenus, clés API.</small>
               </div>
               <button
                 class="switch"
-                :class="{ on: customCursorEnabled }"
-                :aria-checked="customCursorEnabled"
                 role="switch"
-                @click="setCustomCursor(!customCursorEnabled)"
+                :aria-checked="telemetryEnabled"
+                :disabled="telemetrySaving"
+                :class="{ on: telemetryEnabled }"
+                @click="toggleTelemetry"
+                :aria-label="telemetryEnabled ? 'Désactiver la télémétrie' : 'Activer la télémétrie'"
               >
-                <span class="knob"></span>
+                <span class="switch-knob" />
+              </button>
+            </div>
+            <p class="telemetry-note">
+              {{ telemetryEnabled
+                ? 'Activée : événements conservés localement, envoyés uniquement si un endpoint de collecte est configuré.'
+                : 'Désactivée : aucun événement n’est enregistré.' }}
+            </p>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h2>Fiches de traçabilité</h2>
+          <div class="notif-card">
+            <div class="notif-row">
+              <div class="notif-meta">
+                <strong>Inclure les producteurs sans participation</strong>
+                <small>Proposés dans les fiches même s’ils n’ont encore jamais participé.</small>
+              </div>
+              <button
+                class="switch"
+                role="switch"
+                :aria-checked="inclureNouveaux"
+                :disabled="inclureNouveauxSaving"
+                :class="{ on: inclureNouveaux }"
+                @click="toggleInclureNouveaux"
+                :aria-label="inclureNouveaux ? 'Exclure les nouveaux producteurs' : 'Inclure les nouveaux producteurs'"
+              >
+                <span class="switch-knob" />
+              </button>
+            </div>
+            <p class="telemetry-note">
+              {{ inclureNouveaux
+                ? 'Activé : tous les producteurs avec du stock livrable sont proposés.'
+                : 'Désactivé : seuls les producteurs ayant déjà participé sont proposés.' }}
+            </p>
+          </div>
+        </section>
+
+        <section class="settings-section danger-section">
+          <h2>Zone dangereuse</h2>
+          <div class="notif-card danger-card">
+            <div class="notif-row">
+              <div class="notif-meta">
+                <strong>Supprimer toutes les données</strong>
+                <small>Fiches, producteurs, cultures et unités — irréversible</small>
+              </div>
+              <button class="danger-btn" @click="openDanger">
+                <Trash2 :size="14" />
+                <span>Supprimer…</span>
               </button>
             </div>
           </div>
@@ -204,7 +378,7 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
               </label>
               <label class="field">
                 <span>Email</span>
-                <input v-model="editEmail" type="email" :disabled="saving" placeholder="jean@agrobox.fr" />
+                <input v-model="editEmail" type="email" :disabled="saving" placeholder="jean@Vobox.fr" />
               </label>
               <button class="save-btn" type="submit" :disabled="saving">
                 <span v-if="saving" class="spinner"></span>
@@ -223,6 +397,36 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
             </div>
           </div>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="showDanger" class="danger-overlay" @click.self="closeDanger">
+    <div class="danger-modal" role="alertdialog" aria-modal="true" aria-labelledby="danger-title">
+      <div class="danger-icon"><TriangleAlert :size="22" /></div>
+      <h3 id="danger-title">Supprimer toutes les données ?</h3>
+      <p class="danger-text">
+        Cette action supprime <b>définitivement</b> toutes les fiches de traçabilité, les producteurs,
+        les cultures et les unités agricoles de ce compte. Elle est <b>irréversible</b>.
+      </p>
+      <p v-if="countdown > 0" class="danger-count">
+        Réfléchissez bien… suppression possible dans <b>{{ countdown }} s</b>
+      </p>
+      <p v-else-if="!dangerDone" class="danger-count ready">Vous pouvez encore annuler.</p>
+      <p v-if="dangerDone" class="save-msg ok">{{ dangerDone }}</p>
+      <p v-if="dangerError" class="save-msg err">{{ dangerError }}</p>
+      <div class="danger-actions">
+        <button class="ghost-btn" :disabled="deleting" @click="closeDanger">Annuler</button>
+        <button
+          v-if="!dangerDone"
+          class="danger-confirm"
+          :disabled="countdown > 0 || deleting"
+          @click="confirmDanger"
+        >
+          <span v-if="deleting" class="spinner"></span>
+          {{ deleting ? 'Suppression…' : countdown > 0 ? `Supprimer (${countdown})` : 'Supprimer définitivement' }}
+        </button>
+        <button v-else class="save-btn" @click="closeDanger">Fermer</button>
       </div>
     </div>
   </div>
@@ -246,21 +450,21 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   top: 0;
   z-index: 2;
   padding: 8px 12px 18px;
-  background: linear-gradient(180deg, var(--code-bg) 68%, transparent);
+  background: var(--surface);
 }
 
 .page-header h1 {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
-  color: var(--text-h);
+  color: var(--on-surface);
   margin: 0 0 4px;
-  line-height: 1.15;
+  line-height: 1.2;
 }
 
 .page-header p {
   margin: 0;
-  color: var(--text);
-  font-size: 15px;
+  color: var(--on-surface-variant);
+  font-size: 14px;
 }
 
 /* ---------- Body ---------- */
@@ -289,30 +493,20 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
 /* ---------- Carte Profil ---------- */
 .profile-card {
   position: relative;
-  border-radius: 24px;
-  border: 1px solid var(--border);
-  background: linear-gradient(180deg, var(--bg) 0%, var(--social-bg) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 1px 2px rgba(0, 0, 0, 0.06),
-    0 12px 32px -8px rgba(0, 0, 0, 0.18),
-    0 32px 64px -24px rgba(0, 0, 0, 0.22);
+  border-radius: var(--shape-xl);
+  border: none;
+  background: var(--surface-container);
+  box-shadow: var(--elev-1);
   overflow: hidden;
 }
 
 .profile-card::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  display: none;
 }
 
 .profile-head {
   padding: 28px 24px 22px;
   text-align: center;
-  background: radial-gradient(260px 140px at 50% -20px, var(--accent-bg), transparent 75%);
 }
 
 .avatar-wrap {
@@ -326,20 +520,17 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
 .avatar-fallback {
   width: 100%;
   height: 100%;
-  border-radius: 28px;
+  border-radius: var(--shape-xl);
   display: grid;
   place-items: center;
   object-fit: cover;
 }
 
 .avatar-fallback {
-  font-size: 30px;
-  font-weight: 800;
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 65%, #000 35%) 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    0 12px 28px -6px color-mix(in srgb, var(--accent) 65%, transparent);
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--on-primary-container);
+  background: var(--primary-container);
 }
 
 .avatar-img {
@@ -401,7 +592,7 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   background: none;
   border: none;
   padding: 4px 8px;
-  color: #dc2626;
+  color: var(--error);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -466,21 +657,21 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 16px;
+  height: 44px;
+  padding: 0 24px;
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: 0.1px;
   border: none;
-  border-radius: 10px;
+  border-radius: var(--shape-full);
   cursor: pointer;
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 70%, #000 30%) 100%);
-  box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--accent) 70%, transparent);
-  transition: transform 0.2s ease, filter 0.2s ease;
+  color: var(--on-primary);
+  background: var(--primary);
+  transition: box-shadow var(--motion);
 }
 
 .save-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  filter: brightness(1.06);
+  box-shadow: var(--elev-1);
 }
 
 .save-btn:disabled {
@@ -495,18 +686,18 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
 }
 
 .save-msg.ok {
-  color: #1a9e4b;
+  color: var(--success, #1a9e4b);
 }
 
 .save-msg.err {
-  color: #dc2626;
+  color: var(--error);
 }
 
 .spinner {
   width: 14px;
   height: 14px;
   border: 2px solid transparent;
-  border-top-color: #fff;
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -558,12 +749,10 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
 
 .settings-section {
   padding: 22px 24px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.05),
-    0 6px 20px -14px rgba(0, 0, 0, 0.2);
+  background: var(--surface-container-low);
+  border: none;
+  border-radius: var(--shape-lg);
+  box-shadow: var(--elev-1);
 }
 
 .settings-section h2 {
@@ -652,15 +841,167 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   color: var(--text);
 }
 
-/* ---------- Curseur ---------- */
-.cursor-card {
+/* ---------- Mises �� jour ---------- */
+/* ---------- Mises à jour ---------- */
+.update-card {
   margin-top: 14px;
+}
+
+.update-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px 2px;
+}
+
+.update-head strong {
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.update-head small {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.segment {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--code-bg);
+  flex-shrink: 0;
+}
+
+.segment-btn {
+  padding: 5px 14px;
+  border: none;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: none;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+
+.segment-btn.active {
+  background: var(--accent);
+  color: var(--on-primary);
+}
+
+.channel-badge {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--on-primary);
+}
+
+.check-btn {
+  flex-shrink: 0;
+  padding: 8px 18px;
+  border: none;
+  border-radius: var(--shape-full);
+  background: var(--secondary-container);
+  color: var(--on-secondary-container);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: box-shadow var(--motion);
+}
+
+.check-btn:hover:not(:disabled) {
+  box-shadow: var(--elev-1);
+}
+
+.check-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.ok-text {
+  color: var(--success, #16a34a);
+  font-weight: 600;
+}
+
+.version-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 4px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.version-row span {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.version-row code {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-h);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px 10px;
 }
 
 /* ---------- Lignes avec switch (curseur) ---------- */
 .notif-card {
   display: flex;
   flex-direction: column;
+}
+
+.telemetry-note {
+  margin: 0;
+  padding: 4px 4px 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 48px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: var(--surface-container-highest);
+  cursor: pointer;
+  transition: background var(--motion);
+  padding: 0;
+}
+
+.switch .switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--on-surface-variant);
+  transition: transform var(--motion), background var(--motion);
+}
+
+.switch.on {
+  background: var(--primary);
+}
+
+.switch.on .switch-knob {
+  transform: translateX(20px);
+  background: var(--on-primary);
+}
+
+.switch:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .notif-row {
@@ -691,39 +1032,6 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   color: var(--text);
 }
 
-.switch {
-  position: relative;
-  width: 46px;
-  height: 26px;
-  flex-shrink: 0;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--code-bg);
-  cursor: pointer;
-  transition: background 0.25s ease, border-color 0.25s ease;
-}
-
-.switch .knob {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--text);
-  transition: transform 0.25s ease, background 0.25s ease;
-}
-
-.switch.on {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.switch.on .knob {
-  transform: translateX(20px);
-  background: #fff;
-}
-
 /* ---------- Responsive ---------- */
 @media (max-width: 900px) {
   .settings-body {
@@ -741,5 +1049,136 @@ const themeOptions: { value: Theme; label: string; description: string; swatch: 
   .settings-section {
     padding: 18px 16px;
   }
+}
+
+/* ---------- Zone dangereuse ---------- */
+.danger-section h2 {
+  color: var(--error);
+}
+
+.danger-card {
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.danger-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(220, 38, 38, 0.5);
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--error);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.danger-btn:hover {
+  background: rgba(220, 38, 38, 0.16);
+}
+
+.danger-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.danger-modal {
+  width: min(440px, 100%);
+  background: var(--bg);
+  border: 1px solid rgba(220, 38, 38, 0.4);
+  border-radius: 16px;
+  padding: 22px;
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.4);
+}
+
+.danger-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--error);
+  margin-bottom: 10px;
+}
+
+.danger-modal h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: var(--text-h);
+}
+
+.danger-text {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.danger-count {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--error);
+}
+
+.danger-count.ready {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.danger-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.ghost-btn {
+  padding: 9px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-h);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.danger-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: 10px;
+  border: none;
+  background: var(--error);
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.danger-confirm:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.danger-confirm:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 </style>

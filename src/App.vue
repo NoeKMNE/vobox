@@ -29,7 +29,7 @@ onMounted(async () => {
 
 <template>
   <router-view v-slot="{ Component, route }">
-    <transition name="page-root" mode="out-in">
+    <transition name="page-root" mode="out-in" :duration="{ enter: 260, leave: 260 }">
       <component :is="Component" :key="route.matched[0]?.path" />
     </transition>
   </router-view>

@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronRight, FileUp, Loader, MapPin, Save, Search, Sprout, Trash2, UploadCloud, X } from '@lucide/vue'
-import CalligraphText from '../components/CalligraphText.vue'
 import { exportBackup, getToken, importExcel, listExploitations, resetData, searchExploitations, type Exploitation, type ImportResult, type SearchCategory } from '../composables/useAuth'
 
 const router = useRouter()
@@ -205,7 +204,7 @@ const doReset = async () => {
   <div class="data-page">
     <header class="page-header">
       <div class="page-header-text">
-        <h1><CalligraphText text="Données" :initial="true" /></h1>
+        <h1>Données</h1>
         <p>Importez vos fichiers Excel pour charger vos exploitations agricoles</p>
       </div>
       <div class="page-actions">
@@ -254,7 +253,10 @@ const doReset = async () => {
     <div v-if="lastImport" class="msg ok">
       {{ lastImport.exploitations_added }} exploitation{{ lastImport.exploitations_added > 1 ? 's' : '' }} importée{{ lastImport.exploitations_added > 1 ? 's' : '' }},
       {{ lastImport.cultures_added }} culture{{ lastImport.cultures_added > 1 ? 's' : '' }},
-      {{ lastImport.unites_added }} unité{{ lastImport.unites_added > 1 ? 's' : '' }} agricole{{ lastImport.unites_added > 1 ? 's' : '' }}
+      {{ lastImport.unites_added }} unité{{ lastImport.unites_added > 1 ? 's' : '' }} agricole{{ lastImport.unites_added > 1 ? 's' : '' }}<template v-if="lastImport.rows_updated > 0 || lastImport.rows_deleted > 0">
+        · {{ lastImport.rows_updated }} mise{{ lastImport.rows_updated > 1 ? 's' : '' }} à jour,
+        {{ lastImport.rows_deleted }} supprimée{{ lastImport.rows_deleted > 1 ? 's' : '' }}</template
+      >
     </div>
 
     <details v-if="lastImport && lastImport.sheets.length" class="debug-box">
@@ -355,6 +357,9 @@ const doReset = async () => {
     <section v-else-if="!error" class="empty-state">
       <span class="empty-icon"><FileUp :size="22" /></span>
       <p>Aucune exploitation chargée pour le moment.</p>
+      <button type="button" class="guide-link" @click="router.push({ name: 'Guide' })">
+        Voir comment importer pas à pas
+      </button>
     </section>
   </div>
 </template>
@@ -379,7 +384,7 @@ const doReset = async () => {
 }
 
 .page-header h1 {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-h);
   margin: 0 0 4px;
@@ -395,13 +400,12 @@ const doReset = async () => {
 .header-chip {
   flex-shrink: 0;
   padding: 8px 14px;
-  background: var(--bg);
-  border: 1px solid var(--border);
+  background: var(--surface-container-high);
+  border: none;
   border-radius: 999px;
-  color: var(--text-h);
+  color: var(--on-surface);
   font-size: 13px;
   font-weight: 600;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .dropzone {
@@ -414,9 +418,9 @@ const doReset = async () => {
   height: 190px;
   margin: 0 12px;
   padding: 24px;
-  border: 1.5px dashed var(--border);
-  border-radius: 22px;
-  background: linear-gradient(180deg, var(--bg) 0%, rgba(255, 255, 255, 0.5) 100%);
+  border: 1.5px dashed var(--outline);
+  border-radius: var(--shape-xl);
+  background: var(--surface-container-low);
   cursor: pointer;
   text-align: center;
   transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
@@ -440,12 +444,11 @@ const doReset = async () => {
 .dropzone-icon {
   display: grid;
   place-items: center;
-  width: 54px;
-  height: 54px;
-  border-radius: 16px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  width: 56px;
+  height: 56px;
+  border-radius: var(--shape-lg);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 
 .dropzone-title {
@@ -495,14 +498,14 @@ const doReset = async () => {
 }
 
 .msg.ok {
-  background: rgba(34, 197, 94, 0.12);
-  color: var(--green-ok, #16a34a);
-  border: 1px solid rgba(34, 197, 94, 0.25);
+  background: color-mix(in srgb, var(--success, #16a34a) 12%, transparent);
+  color: var(--success, var(--green-ok, #16a34a));
+  border: 1px solid color-mix(in srgb, var(--success, #16a34a) 25%, transparent);
 }
 
 .msg.error {
   background: rgba(220, 38, 38, 0.1);
-  color: #dc2626;
+  color: var(--error);
   border: 1px solid rgba(220, 38, 38, 0.25);
 }
 
@@ -510,7 +513,7 @@ const doReset = async () => {
   flex-shrink: 0;
   margin: 12px 12px 0;
   padding: 12px 14px;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--surface-container);
   border: 1px solid var(--border);
   border-radius: 14px;
   color: var(--text);
@@ -537,7 +540,7 @@ const doReset = async () => {
   margin: 0 0 2px;
   padding: 2px 8px;
   border-radius: 6px;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--surface-container-high);
   white-space: pre-wrap;
   word-break: break-word;
   font-family: 'Courier New', monospace;
@@ -573,8 +576,8 @@ const doReset = async () => {
 }
 
 .action-btn.danger:hover:not(:disabled) {
-  border-color: #dc2626;
-  color: #dc2626;
+  border-color: var(--error);
+  color: var(--error);
 }
 
 .action-btn:disabled {
@@ -745,21 +748,17 @@ const doReset = async () => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 12px;
-  background: linear-gradient(180deg, var(--bg) 0%, rgba(255, 255, 255, 0.5) 100%);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  padding: 12px;
+  background: var(--surface-container-low);
+  border: none;
+  border-radius: var(--shape-md);
+  box-shadow: var(--elev-1);
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: box-shadow var(--motion);
 }
 
 .tile:hover {
-  transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 6px 14px -8px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--elev-2);
 }
 
 .tile:focus-visible {
@@ -854,13 +853,13 @@ const doReset = async () => {
 }
 
 .badge-culture {
-  color: var(--green-ok, #16a34a);
-  background: rgba(34, 197, 94, 0.1);
+  color: var(--success, #16a34a);
+  background: color-mix(in srgb, var(--success, #16a34a) 10%, transparent);
 }
 
 .badge-unite {
-  color: #2563eb;
-  background: rgba(37, 99, 235, 0.1);
+  color: var(--info, #2563eb);
+  background: color-mix(in srgb, var(--info, #2563eb) 10%, transparent);
 }
 
 .tile-arrow {
@@ -894,6 +893,21 @@ const doReset = async () => {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
+}
+
+.guide-link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+
+.guide-link:hover {
+  background: var(--accent-bg);
 }
 
 @media (max-width: 480px) {

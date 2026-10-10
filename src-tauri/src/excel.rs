@@ -199,6 +199,82 @@ pub struct SheetDump {
     pub sample: Vec<Vec<String>>,
 }
 
+pub fn maj_estimations_xlsx(
+    bytes: &[u8],
+    ajustements: &[(String, f64)],
+) -> Result<Vec<u8>, String> {
+    use rust_xlsxwriter::Workbook;
+
+    let cursor = Cursor::new(bytes);
+    let mut src = open_workbook_auto_from_rs(cursor)
+        .map_err(|e| format!("Format non pris en charge : {e}"))?;
+    let names = src.sheet_names().to_owned();
+
+    let mut out = Workbook::new();
+    for name in names {
+        let range = src
+            .worksheet_range(&name)
+            .ok_or_else(|| "Feuille introuvable".to_string())?
+            .map_err(|e| format!("Lecture impossible : {e}"))?;
+
+        // repérer la colonne estimation + produit via les en-têtes.
+        let rows: Vec<&[DataType]> = range.rows().collect();
+        let mut estimation_col: Option<usize> = None;
+        let mut produit_col: Option<usize> = None;
+        let mut header_idx = 0usize;
+        for (i, row) in rows.iter().enumerate().take(20) {
+            let headers: Vec<String> = row.iter().map(cell_str).collect();
+            let est = headers.iter().position(|h| {
+                let t = clean(h);
+                t.contains("recolte") && (t.contains("cours") || t.contains("rapprochee"))
+            });
+            let pro = headers.iter().position(|h| clean(h).contains("produit"));
+            if est.is_some() && pro.is_some() {
+                estimation_col = est;
+                produit_col = pro;
+                header_idx = i;
+                break;
+            }
+        }
+
+        // appliquer les facteurs d'estimation aux lignes correspondantes.
+        let mut adj_values: Vec<Vec<DataType>> = rows.iter().map(|r| r.to_vec()).collect();
+        if let (Some(est_col), Some(prod_col)) = (estimation_col, produit_col) {
+            for row in adj_values.iter_mut().skip(header_idx + 1) {
+                let produit = cell_str(&row[prod_col]);
+                let key = produit.trim().to_lowercase();
+                if let Some((_, factor)) = ajustements.iter().find(|(p, _)| p.trim().to_lowercase() == key) {
+                    if let Some(v) = cell_str(&row[est_col]).parse::<f64>().ok() {
+                        row[est_col] = DataType::Float(v * factor);
+                    }
+                }
+            }
+        }
+
+        let sheet = out.add_worksheet();
+        sheet
+            .set_name(&name)
+            .map_err(|e| format!("Nom de feuille invalide : {e}"))?;
+        for (r, row) in adj_values.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                match cell {
+                    DataType::Float(v) => { sheet.write_number(r as u32, c as u16, *v).map_err(|e| e.to_string())?; }
+                    DataType::Int(v) => { sheet.write_number(r as u32, c as u16, *v as f64).map_err(|e| e.to_string())?; }
+                    DataType::Bool(b) => { sheet.write_boolean(r as u32, c as u16, *b).map_err(|e| e.to_string())?; }
+                    DataType::String(s) => { sheet.write_string(r as u32, c as u16, s).map_err(|e| e.to_string())?; }
+                    DataType::DateTime(v) => { let v = *v; let _ = sheet.write_number(r as u32, c as u16, v).map_err(|e| e.to_string()); }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let buf = out
+        .save_to_buffer()
+        .map_err(|e| format!("Écriture impossible : {e}"))?;
+    Ok(buf)
+}
+
 pub fn inspect_excel(bytes: &[u8]) -> Result<Vec<SheetDump>, String> {
     dump_excel(bytes)
 }
@@ -311,10 +387,7 @@ fn parse_exploitations(
             }
             let field = match cols.get(i).copied().unwrap_or(ColKind::Skip) {
                 ColKind::Field(f) => f,
-                ColKind::Repeated(label) => {
-                    let f = repeated_field(label, &mut counts);
-                    f
-                }
+                ColKind::Repeated(label) => repeated_field(label, &mut counts),
                 ColKind::Skip => continue,
             };
             set_exploitation_field(&mut d, field, &val);
@@ -595,9 +668,7 @@ fn sheet3_col_kind(h: &str) -> ColKind {
         }
     } else if h.contains("superficie") {
         Field("superficie_ha")
-    } else if h.contains("identifiant") && h.contains("unite") {
-        Field("identifiant_unite")
-    } else if h.contains("unite agricole") {
+    } else if h.contains("identifiant") && h.contains("unite") || h.contains("unite agricole") {
         Field("identifiant_unite")
     } else {
         Skip
@@ -845,10 +916,11 @@ mod tests {
             "", "", "", "", "HOMME", "0", "0", "SOUGUE DAOUDA", "2025", "12", "23",
         ];
 
-        let mut rows: Vec<Vec<DataType>> = Vec::new();
-        rows.push(title.iter().map(|c| s(c)).collect());
-        rows.push(headers.iter().map(|c| s(c)).collect());
-        rows.push(data.iter().map(|c| s(c)).collect());
+        let rows: Vec<Vec<DataType>> = vec![
+            title.iter().map(|c| s(c)).collect(),
+            headers.iter().map(|c| s(c)).collect(),
+            data.iter().map(|c| s(c)).collect(),
+        ];
 
         let refs: Vec<&[DataType]> = rows.iter().map(|r| r.as_slice()).collect();
 

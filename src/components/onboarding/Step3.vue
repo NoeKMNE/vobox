@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ArrowRight, Palette, RotateCcw } from '@lucide/vue'
-import CalligraphText from '../CalligraphText.vue'
 import TiltCard from './TiltCard.vue'
 import { ACCENTS, currentAccentHex, resetAccent, setAccent } from '../../composables/useAccent'
 import { useTheme, type Theme } from '../../composables/useTheme'
@@ -18,8 +17,8 @@ const themeLabels: Record<Theme, string> = {
   light: 'Clair',
   dark: 'Sombre',
   mono: 'Mono',
-  tropical: 'Tropical',
-  emerald: 'Émeraude'
+  bleu: 'Bleu',
+  neon: 'Néon'
 }
 const themeLabel = (t: Theme) => themeLabels[t]
 
@@ -44,7 +43,7 @@ const reset = () => {
         <div class="hero-icon">
           <Palette :size="34" />
         </div>
-        <h1><CalligraphText text="Personnalisez l’interface" :initial="true" /></h1>
+        <h1>Personnalisez l’interface</h1>
         <p class="hero-text">Choisissez un thème et une couleur d’accent : l’application s’adapte instantanément.</p>
 
         <div class="customize">
@@ -96,12 +95,12 @@ const reset = () => {
             <span class="dot dot-red"></span>
             <span class="dot dot-yellow"></span>
             <span class="dot dot-green"></span>
-            <span class="url">app.agrobox.fr</span>
+            <span class="url">app.Vobox.fr</span>
           </div>
           <div class="preview-body">
             <div class="preview-header">
               <span class="preview-logo">A</span>
-              <span class="preview-name">AgroBox</span>
+              <span class="preview-name">Vobox</span>
               <span class="preview-menu"><span></span><span></span><span></span></span>
             </div>
             <div class="preview-content">
@@ -146,16 +145,13 @@ const reset = () => {
   margin: 20px auto 16px;
   display: grid;
   place-items: center;
-  border-radius: 22px;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 65%, #000 35%) 100%);
-  color: #fff;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    0 12px 28px -6px color-mix(in srgb, var(--accent) 65%, transparent);
+  border-radius: var(--shape-xl);
+  background: var(--primary-container);
+  color: var(--on-primary-container);
 }
 
 h1 {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-h);
   margin: 0 0 10px;
@@ -233,8 +229,8 @@ h1 {
 .theme-light { background: #fff; }
 .theme-dark { background: #16171d; }
 .theme-mono { background: #fff; box-shadow: inset 0 0 0 2px #000; }
-.theme-tropical { background: #f7fbf2; box-shadow: inset 0 0 0 2px #0ea86a; }
-.theme-emerald { background: #f8faf7; box-shadow: inset 0 0 0 2px #16a36a; }
+.theme-bleu { background: #f5f9fd; box-shadow: inset 0 0 0 2px #1c7ed6; }
+.theme-neon { background: #070b12; box-shadow: inset 0 0 0 2px #00e5ff; }
 
 .swatches {
   display: grid;
@@ -344,12 +340,11 @@ h1 {
   height: 30px;
   display: grid;
   place-items: center;
-  border-radius: 9px;
+  border-radius: var(--shape-sm);
   font-size: 14px;
-  font-weight: 800;
-  color: #fff;
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 65%, #000 35%) 100%);
-  box-shadow: 0 6px 14px -4px color-mix(in srgb, var(--accent) 60%, transparent);
+  font-weight: 700;
+  color: var(--on-primary);
+  background: var(--primary);
 }
 
 .preview-name {
@@ -380,13 +375,13 @@ h1 {
 
 .stat {
   height: 54px;
-  border-radius: 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
+  border-radius: var(--shape-md);
+  background: var(--surface-container-high);
+  border: none;
 }
 
 .stat.accent {
-  background: linear-gradient(135deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 65%, #000 35%) 100%);
+  background: var(--primary-container);
   border: none;
 }
 

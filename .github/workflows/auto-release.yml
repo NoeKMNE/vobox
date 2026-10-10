@@ -1,0 +1,151 @@
+name: Auto Release
+
+# Release automatique après chaque push sur publish :
+# bump patch -> tag -> build signé (Win/macOS/Linux) -> Release GitHub -> updates/stable.json
+# Ne se déclenche pas sur les commits de publication eux-mêmes ([skip release], updates/**).
+
+on:
+  push:
+    branches:
+      - publish
+    paths-ignore:
+      - 'updates/**'
+      - 'docs/**'
+      - '*.md'
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: publish
+          fetch-depth: 0
+
+      - name: Compute next tag
+        id: version
+        run: echo "tag=$(node scripts/next-version.mjs)" >> "$GITHUB_OUTPUT"
+
+      - name: Push tag
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG déjà existant, on le réutilise"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: macos-latest
+          - os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: publish
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Sync version from tag
+        run: node scripts/sync-version.mjs "${{ needs.prepare.outputs.tag }}"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: 'Vobox ${{ needs.prepare.outputs.tag }}'
+          releaseDraft: true
+          prerelease: false
+
+      - name: Upload updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-${{ runner.os }}
+          path: |
+            src-tauri/target/release/bundle/**/*.sig
+            src-tauri/target/release/bundle/**/*-setup*.zip
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.AppImage.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout publish
+        uses: actions/checkout@v4
+        with:
+          ref: publish
+
+      - name: Download updater artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: updater-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate updates/stable.json
+        run: node scripts/gen-updater-json.mjs --tag "${{ needs.prepare.outputs.tag }}" --repo "${{ github.repository }}" --assets artifacts --out updates/stable.json
+
+      - name: Attach binaries to draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            updates/stable.json
+            artifacts/**/*.sig
+            artifacts/**/*-setup*.zip
+            artifacts/**/*.app.tar.gz
+            artifacts/**/*.AppImage.tar.gz
+
+      - name: Commit updates/stable.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add updates/stable.json
+          git commit -m "chore: publie stable.json pour ${{ needs.prepare.outputs.tag }} [skip release]" || echo "rien à commiter"
+          git push origin publish
