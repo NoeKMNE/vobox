@@ -1,6 +1,6 @@
 [package]
 name = "vobox"
-version = "0.1.0"
+version = "1.2.0"
 description = "Vobox desktop application"
 authors = ["NoeKMNE"]
 license = ""

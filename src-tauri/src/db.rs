@@ -85,6 +85,7 @@ fn current_week_start() -> String {
 
 /// Semestre d'une date : S1 = sept→fév (année = année du 1er sept),
 /// S2 = mars→août (année = année civile).
+#[cfg(test)]
 fn semestre_pour_date(y: i64, m: u32) -> (&'static str, i64) {
     if (3..=8).contains(&m) {
         ("S2", y)
@@ -154,11 +155,6 @@ fn saison_courante() -> (String, f64) {
     (debut, semaines)
 }
 
-fn format_num_fr(n: f64) -> String {
-    let arrondi = (n * 100.0).round() / 100.0;
-    format!("{}", arrondi).replace('.', ",")
-}
-
 /// Marge aléatoire appliquée aux quantités par producteur (±5 %).
 const MARGE_MIN: f64 = 0.95;
 const MARGE_MAX: f64 = 1.05;
@@ -175,6 +171,7 @@ impl MargeRng {
         Self(u64::from_le_bytes(buf))
     }
 
+    #[cfg(test)]
     fn seeded(seed: u64) -> Self {
         Self(seed)
     }
@@ -197,6 +194,10 @@ impl MargeRng {
 /// chaque part est calculée sur la disponibilité margée (`dispo × facteur`),
 /// plafonnée au reste à couvrir. Le total attribué ne dépasse jamais la demande.
 /// Retourne (allocations `(culture_id, exploitation_id, quantite)`, total).
+///
+/// Conservée pour les tests du générateur de marge : la production utilise
+/// `repartir_quantites_pleine` (commandes honorées intégralement).
+#[cfg(test)]
 fn repartir_quantites(
     lignes: &[(i64, i64, f64)],
     quantite_kg: f64,
@@ -221,40 +222,73 @@ fn repartir_quantites(
 }
 
 /// Variante Vobox : toutes les commandes sont honorées en intégralité.
-/// La part de chaque producteur est proportionnelle à sa disponibilité margée
-/// (`dispo × facteur`), sans plafonnement par le stock : le total couvre
-/// toujours la demande. Retourne (allocations, total = demande).
+/// 1. Remplissage glouton : chaque producteur livre au plus sa disponibilité
+///    (±5 %), dans l'ordre décroissant des capacités — une commande dans le
+///    livrable cumulé est donc servie sans la concentrer sur 1-2 producteurs
+///    qui seuls détiennent le stock.
+/// 2. Surplus éventuel (demande au-delà du livrable cumulé) : réparti au
+///    prorata des estimations initiales (`poids`), pour couvrir exactement la
+///    demande. Retourne (allocations, total ≈ demande).
 fn repartir_quantites_pleine(
-    lignes: &[(i64, i64, f64)],
+    lignes: &[(i64, i64, f64, f64)],
     poids: &[f64],
     total_poids: f64,
     quantite_kg: f64,
     rng: &mut MargeRng,
 ) -> (Vec<(i64, i64, f64)>, f64) {
-    if lignes.is_empty() || total_poids <= 0.0 {
+    if lignes.is_empty() {
         return (Vec::new(), 0.0);
     }
-    // Parts proportionnelles au poids, margées ±5 %, puis normalisées pour
-    // couvrir exactement la demande.
-    let mut parts: Vec<(i64, i64, f64)> = Vec::with_capacity(lignes.len());
-    let mut brut = 0.0;
-    for ((culture_id, exploitation_id, _), w) in lignes.iter().zip(poids.iter()) {
-        let part = (*w / total_poids) * rng.facteur_marge();
+    let n = lignes.len();
+    let mut quant = vec![0.0_f64; n];
+    let mut reste = quantite_kg;
+    // 1) Glouton : chaque producteur livre au plus sa disponibilité (±5 %).
+    for (i, (_, _, dispo, _)) in lignes.iter().enumerate() {
+        if reste <= 1e-9 {
+            break;
+        }
+        let part = (dispo.max(0.0) * rng.facteur_marge()).min(reste);
         if part <= 0.0 {
             continue;
         }
-        brut += part;
-        parts.push((*culture_id, *exploitation_id, part));
+        quant[i] = part;
+        reste -= part;
     }
-    if parts.is_empty() || brut <= 0.0 {
-        return (Vec::new(), 0.0);
+    // 2) Surplus au-delà du livrable cumulé : au prorata des estimations
+    //    initiales, normalisé pour couvrir exactement le reste.
+    if reste > 1e-9 {
+        let denom = if total_poids > 0.0 { total_poids } else { n as f64 };
+        let mut brut = 0.0;
+        let mut parts_brut = vec![0.0_f64; n];
+        for (i, w) in poids.iter().enumerate() {
+            let wi = if total_poids > 0.0 { *w } else { 1.0 };
+            if wi <= 0.0 {
+                continue;
+            }
+            let part = (wi / denom) * rng.facteur_marge();
+            if part <= 0.0 {
+                continue;
+            }
+            brut += part;
+            parts_brut[i] = part;
+        }
+        if brut > 0.0 {
+            let facteur = reste / brut;
+            for (i, p) in parts_brut.iter().enumerate() {
+                if *p > 0.0 {
+                    quant[i] += *p * facteur;
+                }
+            }
+        }
     }
-    let facteur = quantite_kg / brut;
-    for p in parts.iter_mut() {
-        p.2 *= facteur;
-    }
-    let total = parts.iter().map(|(_, _, q)| *q).sum();
-    (parts, total)
+    let allocations: Vec<(i64, i64, f64)> = lignes
+        .iter()
+        .zip(quant.iter())
+        .filter(|(_, q)| **q > 0.0)
+        .map(|((cid, eid, _, _), q)| (*cid, *eid, *q))
+        .collect();
+    let total: f64 = allocations.iter().map(|(_, _, q)| q).sum();
+    (allocations, total)
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -2315,7 +2349,7 @@ CREATE TABLE IF NOT EXISTS sessions (
         let (saison_debut, semaines) = saison_courante();
         let two_weeks_ago = date_start_days_ago(14);
 
-        let rows: Vec<(i64, i64, f64)> = {
+        let rows: Vec<(i64, i64, f64, f64)> = {
             let mut stmt = tx
                 .prepare(&format!(
                     "SELECT c.id, c.exploitation_id,
@@ -2324,7 +2358,8 @@ CREATE TABLE IF NOT EXISTS sessions (
                                  JOIN fiches_tracabilite f ON f.id = a.fiche_id
                                   AND f.created_at >= ?5
                                  WHERE a.culture_id = c.id), 0
-                            ) AS dispo
+                            ) AS dispo,
+                            c.recolte_estimee AS estimee
                      FROM cultures_certifiees c
                      JOIN exploitations e ON e.id = c.exploitation_id AND e.user_id = ?1
                      WHERE trim(lower(c.produit)) = trim(lower(?2))
@@ -2342,7 +2377,7 @@ CREATE TABLE IF NOT EXISTS sessions (
             let fetched = stmt
                 .query_map(
                     params![user_id, produit, ratio, WEEKS_PER_SEMESTER, saison_debut, two_weeks_ago, semaines],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .map_err(|e| format!("Erreur de lecture des candidats : {e}"))?
                 .collect::<Result<Vec<_>, _>>()
@@ -2353,10 +2388,13 @@ CREATE TABLE IF NOT EXISTS sessions (
         // Marge aléatoire ±5 % sur la part de chaque producteur (voir `repartir_quantites`).
         // Vobox : toutes les commandes sont honorées en intégralité, même au-delà
         // du livrable estimé — le surplus est compensé à l'ajustement hebdo.
-        let mut poids: Vec<f64> = rows.iter().map(|(_, _, d)| d.max(0.0)).collect();
+        // Poids du surplus : estimations initiales (récolte estimée) de chaque
+        // producteur, pas les disponibilités, pour ne pas concentrer les grosses
+        // livraisons sur 1-2 producteurs.
+        let mut poids: Vec<f64> = rows.iter().map(|(_, _, _, est)| *est).collect();
         let mut somme: f64 = poids.iter().sum();
         if somme <= 0.0 && !rows.is_empty() {
-            // Aucune disponibilité margée : répartition égale entre éligibles.
+            // Aucune estimation pondérable : répartition égale entre éligibles.
             poids = vec![1.0; rows.len()];
             somme = rows.len() as f64;
         }
@@ -3346,7 +3384,7 @@ mod tests {
         assert!(!db.inclure_nouveaux());
         assert!(db.producteurs_pour_fiche(&token, "cacao").expect("liste").is_empty());
         let err = db.generer_fiche(&token, "cacao", 10.0, None).expect_err("aucun éligible");
-        assert!(err.contains("Stock insuffisant"), "erreur: {err}");
+        assert!(err.contains("Aucun producteur éligible"), "erreur: {err}");
         let err_manuel = db
             .generer_fiche_manuelle(&token, "cacao", None, vec![(id2, 5.0)])
             .expect_err("jamais participé");
@@ -3396,7 +3434,7 @@ mod tests {
         assert_ne!(fiche.reference, fiche2.reference, "références uniques");
 
         let err = db.generer_fiche_seed(&token, "cacao", 1.0, None, 1).expect_err("stock épuisé");
-        assert!(err.contains("Stock insuffisant"), "erreur: {err}");
+        assert!(err.contains("Aucun producteur éligible"), "erreur: {err}");
 
         let stocks2 = db.produits_disponibles(&token).expect("stocks");
         assert!(stocks2.is_empty(), "plus aucun producteur éligible cette semaine (budget + carence 2 semaines)");
@@ -3407,40 +3445,43 @@ mod tests {
     }
 
     #[test]
-    fn generer_fiche_partielle_si_stock_insuffisant() {
+    fn generer_fiche_complete_au_dela_du_stock() {
         let (db, token) = db_avec_cacao();
         let (h1, h2) = hebdo_cacao();
         // Demande au-delà du stock saisonnier même avec la marge +5 %.
         let total_saison = (h1 + h2) * saison_semaines();
         let demande = total_saison * 1.10 + 50.0;
 
-        let fiche = db.generer_fiche_seed(&token, "cacao", demande, None, 1).expect("fiche partielle");
-        assert_eq!(fiche.statut, "partielle");
+        let fiche = db.generer_fiche_seed(&token, "cacao", demande, None, 5).expect("fiche intégrale");
+        assert_eq!(fiche.statut, "complete", "toute commande est honorée intégralement");
         assert_eq!(fiche.items.len(), 2);
-        // Marge ±5 % : chaque part suit son livrable saisonnier.
-        assert!(
-            (fiche.quantite_attribuee_kg - total_saison).abs() <= total_saison * 0.05 + 0.01,
-            "attribué {} proche du stock saisonnier {total_saison}",
-            fiche.quantite_attribuee_kg
-        );
+        // Le surplus est réparti : chaque part couvre au moins sa disponibilité (±5 %),
+        // et le total attribué = demande intégrale.
+        let s = saison_semaines();
         for item in &fiche.items {
             let dispo = if item.exploitation.id_interne.as_deref() == Some("CAPKO_001") {
-                h1 * saison_semaines()
+                h1 * s
             } else {
-                h2 * saison_semaines()
+                h2 * s
             };
             assert!(
-                (item.quantite_kg - dispo).abs() <= dispo * 0.05 + 0.01,
-                "part {} dans ±5 % de {dispo}",
+                item.quantite_kg >= dispo * MARGE_MIN - 0.01,
+                "part {} ≥ livrable {dispo} (marge -5 %), surplus ajouté",
                 item.quantite_kg
             );
         }
+        assert!(
+            (fiche.quantite_attribuee_kg - demande).abs() < 0.0001,
+            "attribué {} = demande {demande}",
+            fiche.quantite_attribuee_kg
+        );
 
+        // Les deux producteurs ayant participé, plus personne n'est éligible.
         let err = db.generer_fiche_seed(&token, "cacao", 1.0, None, 1).expect_err("épuisé");
-        assert!(err.contains("Stock insuffisant"));
+        assert!(err.contains("Aucun producteur éligible"), "erreur: {err}");
 
         let err2 = db.generer_fiche_seed(&token, "cafe", 1.0, None, 1).expect_err("produit inconnu");
-        assert!(err2.contains("Stock insuffisant"), "erreur: {err2}");
+        assert!(err2.contains("Aucun producteur éligible"), "erreur: {err2}");
     }
 
     #[test]
@@ -3514,10 +3555,12 @@ mod tests {
         let liste = db.producteurs_pour_fiche(&token, "cacao").expect("liste");
         let id1 = liste[0].culture_id;
 
+        // Vobox : la fiche manuelle honore l'intégralité, même au-delà du livrable.
         let trop = db
             .generer_fiche_manuelle(&token, "cacao", None, vec![(id1, h1 * saison_semaines() + 1.0)])
-            .expect_err("livrable dépassé");
-        assert!(trop.contains("quantité livrable"), "erreur: {trop}");
+            .expect("livrable dépassé mais commande honorée");
+        assert_eq!(trop.statut, "complete");
+        assert!((trop.quantite_attribuee_kg - (h1 * saison_semaines() + 1.0)).abs() < 0.0001);
 
         let inconnu = db
             .generer_fiche_manuelle(&token, "cafe", None, vec![(id1, 10.0)])
@@ -3702,16 +3745,19 @@ mod tests {
         assert!((fiche1.quantite_attribuee_kg - 1.0).abs() < 0.0001);
 
         // CAPKO_001 garde du stock mais vient d'être utilisé : il est exclu 2 semaines.
-        // Demande au-delà du livrable saisonnier de CAPKO_002 même avec la marge +5 %.
+        // Demande au-delà du livrable saisonnier de CAPKO_002 même avec la marge +5 % :
+        // la commande reste honorée intégralement, le surplus allant au seul éligible.
         let h2s = hebdo_cacao().1 * saison_semaines();
         let fiche2 = db.generer_fiche_seed(&token, "cacao", h2s * 1.10 + 10.0, None, 1).expect("fiche2");
-        assert_eq!(fiche2.statut, "partielle");
+        assert_eq!(fiche2.statut, "complete", "commande honorée au-delà du livrable");
         assert_eq!(fiche2.items.len(), 1, "CAPKO_001 exclu par la période de carence");
         assert_eq!(fiche2.items[0].exploitation.id_interne.as_deref(), Some("CAPKO_002"));
-        // Marge ±5 % : la part de CAPKO_002 suit son livrable saisonnier.
+        // Le surplus est ajouté à CAPKO_002 : l'intégralité de la demande est couverte.
         assert!(
-            (fiche2.quantite_attribuee_kg - h2s).abs() <= h2s * 0.05 + 0.01,
-            "uniquement le livrable saisonnier de CAPKO_002 (±5 %)"
+            (fiche2.quantite_attribuee_kg - (h2s * 1.10 + 10.0)).abs() < 0.0001,
+            "attribué {} = demande {}",
+            fiche2.quantite_attribuee_kg,
+            h2s * 1.10 + 10.0
         );
     }
 
