@@ -279,6 +279,36 @@ pub fn inspect_excel(bytes: &[u8]) -> Result<Vec<SheetDump>, String> {
     dump_excel(bytes)
 }
 
+pub fn traceability_text(bytes: &[u8]) -> Result<String, String> {
+    let cursor = Cursor::new(bytes);
+    let mut workbook = open_workbook_auto_from_rs(cursor)
+        .map_err(|e| format!("Classeur Excel illisible : {e}"))?;
+    let mut text = String::new();
+
+    for name in workbook.sheet_names().to_owned() {
+        let range = workbook
+            .worksheet_range(&name)
+            .ok_or_else(|| format!("Feuille « {name} » introuvable"))?
+            .map_err(|e| format!("Feuille « {name} » illisible : {e}"))?;
+        text.push_str(&format!("\nFeuille : {name}\n"));
+        for row in range.rows() {
+            let cells: Vec<String> = row.iter().map(cell_str).collect();
+            if cells.iter().any(|cell| !cell.is_empty()) {
+                text.push_str(&cells.join(" | "));
+                text.push('\n');
+            }
+            if text.len() > 40_000 {
+                return Err("Le classeur est trop volumineux pour l’analyse IA (limite : 40 000 caractères).".into());
+            }
+        }
+    }
+
+    if text.trim().is_empty() {
+        return Err("Le classeur ne contient aucune donnée lisible.".into());
+    }
+    Ok(text)
+}
+
 fn dump_excel(bytes: &[u8]) -> Result<Vec<SheetDump>, String> {
     let cursor = Cursor::new(bytes);
     let mut workbook = open_workbook_auto_from_rs(cursor)

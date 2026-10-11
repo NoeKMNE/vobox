@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::db::{AiSession, Db, SearchCategory};
+use crate::db::{AiSession, Db, ProducteurImportOption, SearchCategory};
 use crate::AI_API_BASE;
 
 const DEFAULT_MODEL: &str = "deepseek-chat";
@@ -28,6 +28,27 @@ pub struct AgentResponse {
     pub actions: Vec<ProposedAction>,
     pub used_tools: Vec<String>,
     pub model: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FicheAnalysisLine {
+    pub producteur: String,
+    pub produit: String,
+    pub quantite_kg: f64,
+    pub culture_id: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct FicheAnalysis {
+    pub reference: Option<String>,
+    pub titre: String,
+    pub produit: String,
+    pub date: Option<String>,
+    pub quantite_demandee_kg: Option<f64>,
+    pub lignes: Vec<FicheAnalysisLine>,
+    pub incertitudes: Vec<String>,
+    #[serde(skip)]
+    pub producteurs: Vec<ProducteurImportOption>,
 }
 
 #[derive(Serialize)]
@@ -297,6 +318,114 @@ pub async fn chat(db: &Db, token: &str, history: Vec<ChatMsg>) -> Result<AgentRe
     }
 
     Err("L'assistant n'a pas pu finaliser sa réponse. Réessayez.".to_string())
+}
+
+pub async fn analyser_fiche(
+    db: &Db,
+    token: &str,
+    filename: &str,
+    excel_text: Option<String>,
+    image_data_url: Option<String>,
+) -> Result<FicheAnalysis, String> {
+    let user = db.validate(token)?;
+    let mut ai_session = db
+        .get_ai_session(user.id)?
+        .ok_or_else(|| "Connexion au service IA indisponible. Déconnectez-vous puis reconnectez-vous.".to_string())?;
+    let configured_model = db
+        .get_setting(SETTING_MODEL)?
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let model = if ["deepseek-chat", "deepseek-reasoner"].contains(&configured_model.as_str()) {
+        configured_model
+    } else {
+        DEFAULT_MODEL.to_string()
+    };
+    let producers = db.producteurs_importables(token)?;
+    if producers.is_empty() {
+        return Err("Importez d’abord le fichier des exploitations et des cultures.".into());
+    }
+    let producers_json = serde_json::to_string(&producers)
+        .map_err(|e| format!("Préparation des producteurs impossible : {e}"))?;
+    if producers_json.len() > 250_000 {
+        return Err("La base contient trop de producteurs pour joindre la liste complète à l’analyse. Réduisez les données chargées ou contactez le support.".into());
+    }
+
+    let mut user_content = vec![json!({
+        "type": "text",
+        "text": format!(
+            "Analyse cette fiche de traçabilité existante provenant du fichier « {filename} ».\n\
+             Extrais uniquement les informations lisibles. Ne complète jamais une donnée manquante par supposition.\n\
+             Identifie chaque producteur par culture_id uniquement lorsqu’il correspond sans ambiguïté à une entrée de la liste. Sinon, utilise null.\n\
+             Les quantités doivent être numériques en kg; convertis les tonnes en kg seulement si l’unité est explicite.\n\
+             Retourne uniquement un objet JSON de la forme : {{\"reference\":string|null,\"titre\":string,\"produit\":string,\"date\":\"AAAA-MM-JJ\"|null,\"quantite_demandee_kg\":number|null,\"lignes\":[{{\"producteur\":string,\"produit\":string,\"quantite_kg\":number,\"culture_id\":number|null}}],\"incertitudes\":[string]}}.\n\
+             Si plusieurs produits apparaissent, ne retiens que le produit principal et signale les autres produits dans incertitudes.\n\
+             Producteurs et cultures disponibles dans la base : {producers_json}"
+        )
+    })];
+    if let Some(text) = excel_text {
+        user_content.push(json!({ "type": "text", "text": format!("Contenu des feuilles Excel :\n{text}") }));
+    }
+    if let Some(image) = image_data_url {
+        user_content.push(json!({
+            "type": "image_url",
+            "image_url": { "url": image }
+        }));
+    }
+
+    let endpoint = format!("{AI_API_BASE}/chat/completions");
+    let request = ApiRequest {
+        model: model.clone(),
+        messages: vec![
+            json!({
+                "role": "system",
+                "content": "Tu extrais des données de fiches agricoles pour préparer un import contrôlé. Respecte le schéma demandé et n’invente aucune information."
+            }),
+            json!({ "role": "user", "content": user_content }),
+        ],
+        tools: Vec::new(),
+        temperature: 0.0,
+        max_tokens: 3500,
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|_| "Impossible d'initialiser le service IA.".to_string())?;
+    let response = send_completion(
+        &client,
+        &endpoint,
+        db,
+        user.id,
+        &mut ai_session,
+        &request,
+    )
+    .await?;
+    let content = response
+        .choices
+        .into_iter()
+        .next()
+        .and_then(|choice| choice.message.content)
+        .ok_or_else(|| "L’IA n’a pas retourné de résultat exploitable.".to_string())?;
+    let json_text = content
+        .trim()
+        .strip_prefix("```json")
+        .or_else(|| content.trim().strip_prefix("```"))
+        .unwrap_or(content.trim())
+        .strip_suffix("```")
+        .unwrap_or(content.trim())
+        .trim();
+    let mut analysis: FicheAnalysis = serde_json::from_str(json_text)
+        .map_err(|e| format!("Réponse d’analyse IA invalide : {e}"))?;
+    if analysis.produit.trim().is_empty() || analysis.lignes.is_empty() {
+        return Err("Aucun produit ou producteur n’a pu être extrait de cette fiche.".into());
+    }
+    if analysis.lignes.iter().any(|line| {
+        !line.produit.trim().is_empty()
+            && !line.produit.trim().eq_ignore_ascii_case(analysis.produit.trim())
+    }) {
+        return Err("Cette fiche contient plusieurs produits. Importez chaque produit séparément pour vérifier les quantités et participations.".into());
+    }
+    analysis.producteurs = producers;
+    Ok(analysis)
 }
 
 async fn send_completion(

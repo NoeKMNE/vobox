@@ -16,6 +16,7 @@ Vobox utilise l'API AgroBox à l'**URL de base** `https://api.agrobox.com` pour 
 
 1. **S'authentifier** auprès de l'API et obtenir un **token d'accès IA** (vérification du compte de l'utilisateur).
 2. **Relayer les conversations** de l'assistant vers le LLM, au format **OpenAI-compatible** (`/chat/completions`), en y incluant un **appel d'outils (function calling)**.
+3. **Analyser les fiches historiques à la demande de l'utilisateur** : Vobox transmet au même endpoint le texte extrait d'un classeur ou une photo en entrée multimodale. Cette analyse sert uniquement à préparer un aperçu ; l'enregistrement local n'a lieu qu'après validation explicite.
 
 L'API **ne doit jamais** :
 - exposer, retourner ou loguer la clé du fournisseur LLM tierce ;
@@ -213,7 +214,7 @@ Toutes les erreurs doivent renvoyer `{ "error": { "message": string } }` — l'a
 
 ### 4.3 Confidentialité des données
 - L'API reçoit uniquement : email + mot de passe (auth), puis texte de conversation + **résultats d'outils** (données agricoles agrégées produites localement).
-- Aucun fichier Excel, aucun avatar, aucune donnée brute de la base ne transitent par l'API.
+- Hors import volontaire d'une fiche historique, aucun fichier Excel, aucun avatar ni aucune donnée brute de la base ne transitent par l'API. Pour cette analyse, le contenu du fichier (texte du classeur ou photo) et la liste locale des producteurs/cultures sont envoyés au service IA ; l'API doit traiter ces données comme confidentielles, ne pas les journaliser et ne les conserver que le temps nécessaire à la requête.
 - Politique de rétention des logs : **0** par défaut, ou anonymisée.
 
 ### 4.4 Versioning & compatibilité

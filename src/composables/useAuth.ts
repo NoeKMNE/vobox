@@ -106,8 +106,69 @@ export interface ImportResult {
   sheets: { name: string; rows: number; sample: string[][] }[]
 }
 
+export interface WorkingExcel {
+  file_b64: string
+  sheets: { name: string; rows: number; sample: string[][] }[]
+}
+
 export function importExcel(token: string, fileB64: string, fileName: string): Promise<ImportResult> {
   return invoke<ImportResult>('import_excel', { token, fileB64, fileName })
+}
+
+export interface ProducteurImportOption {
+  culture_id: number
+  exploitation_id: number
+  id_interne: string | null
+  producteur: string
+  produit: string
+}
+
+export interface FicheAnalysisLine {
+  producteur: string
+  produit: string
+  quantite_kg: number
+  culture_id: number | null
+}
+
+export interface FicheAnalysis {
+  reference: string | null
+  titre: string
+  produit: string
+  date: string | null
+  quantite_demandee_kg: number | null
+  lignes: FicheAnalysisLine[]
+  incertitudes: string[]
+  producteurs: ProducteurImportOption[]
+}
+
+export interface FicheImportRequest {
+  reference: string | null
+  titre: string
+  produit: string
+  date: string | null
+  quantite_demandee_kg: number | null
+  lignes: { culture_id: number; quantite_kg: number }[]
+}
+
+export function analyserFicheImport(
+  token: string,
+  fileB64: string,
+  fileName: string,
+  mimeType: string
+): Promise<FicheAnalysis> {
+  return invoke<FicheAnalysis>('analyser_fiche_import', { token, fileB64, fileName, mimeType })
+}
+
+export function importerFicheHistorique(token: string, fiche: FicheImportRequest): Promise<Fiche> {
+  return invoke<Fiche>('importer_fiche_historique', { token, fiche })
+}
+
+export function workingExcelExists(token: string): Promise<boolean> {
+  return invoke<boolean>('working_excel_exists', { token })
+}
+
+export function getWorkingExcel(token: string): Promise<WorkingExcel> {
+  return invoke<WorkingExcel>('get_working_excel', { token })
 }
 
 export function listExploitations(token: string): Promise<Exploitation[]> {

@@ -13,7 +13,7 @@ use db::{
     ImportResult, ProduitStock, ProducteurFiche, RapportSemestre, ResumeParticipation, SearchCategory, Session, User,
 };
 
-pub(crate) const AI_API_BASE: &str = "https://logixio-code.click";
+pub(crate) const AI_API_BASE: &str = "https://logixio-code.click/api/v1";
 
 #[derive(serde::Deserialize)]
 struct AiAuthResponse {
@@ -396,6 +396,107 @@ fn import_excel(
 }
 
 #[tauri::command]
+async fn analyser_fiche_import(
+    state: tauri::State<'_, Db>,
+    token: String,
+    file_b64: String,
+    file_name: String,
+    mime_type: String,
+) -> Result<agent::FicheAnalysis, String> {
+    if file_b64.len() > 16 * 1024 * 1024 {
+        return Err("Le fichier ne doit pas dépasser 12 Mo.".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&file_b64)
+        .map_err(|e| format!("Fichier illisible : {e}"))?;
+    if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
+        return Err("Le fichier doit peser entre 1 octet et 12 Mo.".into());
+    }
+    let extension = std::path::Path::new(&file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let (excel_text, image_data_url) = match extension.as_str() {
+        "xlsx" | "xls" => (Some(excel::traceability_text(&bytes)?), None),
+        "jpg" | "jpeg" | "png" | "webp" => {
+            let expected_mime = match extension.as_str() {
+                "jpg" | "jpeg" => "image/jpeg",
+                "png" => "image/png",
+                _ => "image/webp",
+            };
+            if mime_type != expected_mime {
+                return Err("Le format de l’image n’est pas reconnu.".into());
+            }
+            (None, Some(format!("data:{expected_mime};base64,{file_b64}")))
+        }
+        _ => return Err("Formats acceptés : XLSX, XLS, JPG, PNG et WebP.".into()),
+    };
+    agent::analyser_fiche(&state, &token, &file_name, excel_text, image_data_url).await
+}
+
+#[tauri::command]
+fn importer_fiche_historique(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Db>,
+    token: String,
+    fiche: db::FicheImportRequest,
+) -> Result<Fiche, String> {
+    let imported = state.importer_fiche_historique(&token, fiche)?;
+    track_and_flush(
+        &app,
+        "importer_fiche_historique",
+        serde_json::json!({
+            "nb_producteurs": imported.items.len(),
+            "quantite_kg": imported.quantite_attribuee_kg,
+        }),
+    );
+    Ok(imported)
+}
+
+#[derive(serde::Serialize)]
+struct WorkingExcel {
+    file_b64: String,
+    sheets: Vec<excel::SheetDump>,
+}
+
+#[tauri::command]
+fn working_excel_exists(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Db>,
+    token: String,
+) -> Result<bool, String> {
+    state.validate(&token)?;
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Dossier des données inaccessible : {e}"))?
+        .join("vobox-working-copy.xlsx");
+    Ok(path.is_file())
+}
+
+#[tauri::command]
+fn get_working_excel(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Db>,
+    token: String,
+) -> Result<WorkingExcel, String> {
+    state.validate(&token)?;
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Dossier des données inaccessible : {e}"))?
+        .join("vobox-working-copy.xlsx");
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("Fichier Excel de travail introuvable ou illisible : {e}"))?;
+    let sheets = excel::inspect_excel(&bytes)?;
+    Ok(WorkingExcel {
+        file_b64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        sheets,
+    })
+}
+
+#[tauri::command]
 fn list_exploitations(state: tauri::State<'_, Db>, token: String) -> Result<Vec<Exploitation>, String> {
     state.list_exploitations(&token)
 }
@@ -753,6 +854,10 @@ pub fn run() {
             update_profile,
             update_avatar,
             import_excel,
+            analyser_fiche_import,
+            importer_fiche_historique,
+            working_excel_exists,
+            get_working_excel,
             list_exploitations,
             get_exploitation,
             search_exploitations,

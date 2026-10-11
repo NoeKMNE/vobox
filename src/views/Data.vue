@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronRight, FileUp, Loader, MapPin, Save, Search, Sprout, Trash2, UploadCloud, X } from '@lucide/vue'
-import { exportBackup, getToken, importExcel, listExploitations, resetData, searchExploitations, type Exploitation, type ImportResult, type SearchCategory } from '../composables/useAuth'
+import { ChevronRight, Download, Eye, FileSpreadsheet, FileUp, Loader, MapPin, Save, Search, Sprout, Trash2, UploadCloud, X } from '@lucide/vue'
+import { analyserFicheImport, exportBackup, getToken, getWorkingExcel, importExcel, importerFicheHistorique, listExploitations, resetData, searchExploitations, workingExcelExists, type Exploitation, type FicheAnalysis, type FicheImportRequest, type ImportResult, type SearchCategory, type WorkingExcel } from '../composables/useAuth'
 
 const router = useRouter()
 
@@ -37,6 +37,16 @@ const saving = ref(false)
 const resetting = ref(false)
 const saveMsg = ref('')
 const resetMsg = ref('')
+const workingExcelAvailable = ref(false)
+const loadingWorkingExcel = ref(false)
+const workingExcel = ref<WorkingExcel | null>(null)
+const ficheAnalysis = ref<FicheAnalysis | null>(null)
+const analysingFiche = ref(false)
+const savingFiche = ref(false)
+const ficheDragOver = ref(false)
+const ficheError = ref('')
+const ficheSuccess = ref('')
+const ficheFileInput = ref<HTMLInputElement | null>(null)
 
 const searchingActive = computed(() => searchQuery.value.trim().length > 0)
 
@@ -119,7 +129,20 @@ const clearSearch = () => {
 
 onBeforeUnmount(() => window.clearTimeout(searchTimer))
 
-onMounted(load)
+const checkWorkingExcel = async () => {
+  const token = getToken()
+  if (!token) return
+  try {
+    workingExcelAvailable.value = await workingExcelExists(token)
+  } catch (e) {
+    error.value = typeof e === 'string' ? e : 'Vérification du fichier Excel impossible'
+  }
+}
+
+onMounted(() => {
+  void load()
+  void checkWorkingExcel()
+})
 
 const readFileAsBase64 = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -144,6 +167,7 @@ const handleFile = async (file?: File | null) => {
     const b64 = await readFileAsBase64(file)
     const result = await importExcel(token, b64, file.name)
     lastImport.value = result
+    workingExcelAvailable.value = true
     clearSearch()
     await load()
   } catch (e) {
@@ -154,7 +178,134 @@ const handleFile = async (file?: File | null) => {
   }
 }
 
+const analyseFicheFile = async (file?: File | null) => {
+  if (!file || analysingFiche.value || savingFiche.value) return
+  ficheError.value = ''
+  ficheSuccess.value = ''
+  ficheAnalysis.value = null
+  const extension = file.name.split('.').pop()?.toLowerCase()
+  if (!['xlsx', 'xls', 'jpg', 'jpeg', 'png', 'webp'].includes(extension ?? '')) {
+    ficheError.value = 'Formats acceptés : XLSX, XLS, JPG, PNG et WebP.'
+    return
+  }
+  if (file.size > 12 * 1024 * 1024) {
+    ficheError.value = 'Le fichier ne doit pas dépasser 12 Mo.'
+    return
+  }
+  analysingFiche.value = true
+  try {
+    const token = getToken()
+    if (!token) throw new Error('Session expirée')
+    const fileB64 = await readFileAsBase64(file)
+    ficheAnalysis.value = await analyserFicheImport(token, fileB64, file.name, file.type)
+  } catch (e) {
+    ficheError.value = typeof e === 'string' ? e : 'Analyse de la fiche impossible'
+  } finally {
+    analysingFiche.value = false
+    if (ficheFileInput.value) ficheFileInput.value.value = ''
+  }
+}
+
+const producteursPourLigne = () => {
+  if (!ficheAnalysis.value) return []
+  const produit = ficheAnalysis.value.produit.trim().toLocaleLowerCase('fr')
+  return ficheAnalysis.value.producteurs.filter((p) => p.produit.trim().toLocaleLowerCase('fr') === produit)
+}
+
+const ligneAssociee = (line: FicheAnalysis['lignes'][number]) =>
+  producteursPourLigne().some((p) => p.culture_id === line.culture_id)
+
+const quantiteProposee = computed(() =>
+  ficheAnalysis.value?.lignes.reduce((total, line) => total + line.quantite_kg, 0) ?? 0
+)
+
+const ficheValide = computed(() => {
+  const analysis = ficheAnalysis.value
+  return Boolean(
+    analysis &&
+    analysis.produit.trim() &&
+    analysis.lignes.length &&
+    analysis.lignes.every((line) =>
+      ligneAssociee(line) && Number.isFinite(line.quantite_kg) && line.quantite_kg > 0
+    ) &&
+    (analysis.quantite_demandee_kg == null ||
+      (Number.isFinite(analysis.quantite_demandee_kg) && analysis.quantite_demandee_kg >= quantiteProposee.value))
+  )
+})
+
+const updateFicheQuantity = (value: string) => {
+  if (!ficheAnalysis.value) return
+  const quantity = value.trim() ? Number(value) : null
+  ficheAnalysis.value.quantite_demandee_kg =
+    quantity != null && Number.isFinite(quantity) && quantity > 0 ? quantity : null
+}
+
+const updateLineQuantity = (line: FicheAnalysis['lignes'][number], value: string) => {
+  line.quantite_kg = value.trim() ? Number(value) : 0
+}
+
+const saveImportedFiche = async () => {
+  const analysis = ficheAnalysis.value
+  const token = getToken()
+  if (!analysis || !token || !ficheValide.value || savingFiche.value) return
+  savingFiche.value = true
+  ficheError.value = ''
+  ficheSuccess.value = ''
+  try {
+    const request: FicheImportRequest = {
+      reference: analysis.reference,
+      titre: analysis.titre,
+      produit: analysis.produit,
+      date: analysis.date,
+      quantite_demandee_kg: analysis.quantite_demandee_kg ?? quantiteProposee.value,
+      lignes: analysis.lignes.map((line) => ({
+        culture_id: line.culture_id!,
+        quantite_kg: line.quantite_kg
+      }))
+    }
+    const saved = await importerFicheHistorique(token, request)
+    ficheSuccess.value = `Fiche ${saved.reference} enregistrée dans les archives avec ${saved.items.length} producteur${saved.items.length > 1 ? 's' : ''} et ${formatNum(saved.quantite_attribuee_kg)} kg.`
+    ficheAnalysis.value = null
+  } catch (e) {
+    ficheError.value = typeof e === 'string' ? e : 'Enregistrement de la fiche impossible'
+  } finally {
+    savingFiche.value = false
+  }
+}
+
 const openPicker = () => fileInput.value?.click()
+
+const openWorkingExcel = async () => {
+  const token = getToken()
+  if (!token || loadingWorkingExcel.value) return
+  loadingWorkingExcel.value = true
+  error.value = ''
+  try {
+    workingExcel.value = await getWorkingExcel(token)
+  } catch (e) {
+    error.value = typeof e === 'string' ? e : 'Ouverture du fichier Excel impossible'
+  } finally {
+    loadingWorkingExcel.value = false
+  }
+}
+
+const downloadWorkingExcel = () => {
+  if (!workingExcel.value) return
+  const binary = atob(workingExcel.value.file_b64)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  const url = URL.createObjectURL(
+    new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+  )
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'vobox-mis-a-jour.xlsx'
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+const closeWorkingExcel = () => {
+  workingExcel.value = null
+}
 
 const onDrop = (e: DragEvent) => {
   dragOver.value = false
@@ -205,10 +356,20 @@ const doReset = async () => {
     <header class="page-header">
       <div class="page-header-text">
         <h1>Données</h1>
-        <p>Importez vos fichiers Excel pour charger vos exploitations agricoles</p>
+        <p>Importez vos exploitations et les fiches de traçabilité déjà produites</p>
       </div>
       <div class="page-actions">
         <span class="header-chip">{{ today }}</span>
+        <button
+          v-if="workingExcelAvailable"
+          class="action-btn"
+          :disabled="loadingWorkingExcel"
+          @click="openWorkingExcel"
+        >
+          <Loader v-if="loadingWorkingExcel" class="spin-inline" :size="15" />
+          <Eye v-else :size="15" />
+          {{ loadingWorkingExcel ? 'Chargement…' : 'Voir le fichier Excel' }}
+        </button>
         <button class="action-btn" :disabled="saving" @click="doSave">
           <Save :size="15" />{{ saving ? 'En cours…' : 'Sauvegarder' }}
         </button>
@@ -258,6 +419,113 @@ const doReset = async () => {
         {{ lastImport.rows_deleted }} supprimée{{ lastImport.rows_deleted > 1 ? 's' : '' }}</template
       >
     </div>
+
+    <section class="historical-import">
+      <div class="historical-heading">
+        <div>
+          <h2>Fiches de traçabilité déjà produites</h2>
+          <p>Ajoutez une photo ou un Excel. Le fichier sera transmis au service IA pour préparer un aperçu à valider.</p>
+        </div>
+      </div>
+      <div
+        class="historical-drop"
+        :class="{ over: ficheDragOver, busy: analysingFiche }"
+        role="button"
+        tabindex="0"
+        @click="ficheFileInput?.click()"
+        @keydown.enter="ficheFileInput?.click()"
+        @dragover.prevent="ficheDragOver = true"
+        @dragleave="ficheDragOver = false"
+        @drop.prevent="ficheDragOver = false; analyseFicheFile($event.dataTransfer?.files?.[0])"
+      >
+        <input
+          ref="ficheFileInput"
+          type="file"
+          accept=".xlsx,.xls,.jpg,.jpeg,.png,.webp"
+          class="file-input"
+          @change="analyseFicheFile(($event.target as HTMLInputElement).files?.[0])"
+        />
+        <UploadCloud :size="22" />
+        <strong>{{ analysingFiche ? 'Analyse IA de la fiche…' : 'Glissez une fiche ici ou cliquez pour la choisir' }}</strong>
+        <span>XLSX, XLS, JPG, PNG ou WebP · 12 Mo maximum</span>
+        <Loader v-if="analysingFiche" class="spin-inline" :size="18" />
+      </div>
+      <p v-if="ficheError" class="msg error historical-message">{{ ficheError }}</p>
+      <p v-if="ficheSuccess" class="msg ok historical-message">{{ ficheSuccess }}</p>
+
+      <div v-if="ficheAnalysis" class="fiche-preview">
+        <div class="preview-heading">
+          <div>
+            <h3>Vérifiez les informations extraites</h3>
+            <p>Aucune donnée ne sera enregistrée avant votre validation.</p>
+          </div>
+          <span>{{ ficheAnalysis.lignes.length }} ligne{{ ficheAnalysis.lignes.length > 1 ? 's' : '' }}</span>
+        </div>
+        <div class="preview-fields">
+          <label>Référence
+            <input v-model="ficheAnalysis.reference" type="text" placeholder="Référence" />
+          </label>
+          <label>Titre
+            <input v-model="ficheAnalysis.titre" type="text" placeholder="Titre de la fiche" />
+          </label>
+          <label>Produit
+            <input v-model="ficheAnalysis.produit" type="text" placeholder="Produit" />
+          </label>
+          <label>Date
+            <input v-model="ficheAnalysis.date" type="date" />
+          </label>
+          <label>Quantité demandée (kg)
+            <input
+              type="number"
+              min="0"
+              step="any"
+              :value="ficheAnalysis.quantite_demandee_kg ?? ''"
+              placeholder="Utiliser le total des producteurs"
+              @input="updateFicheQuantity(($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <div class="preview-total">Total producteurs : <strong>{{ formatNum(quantiteProposee) }} kg</strong></div>
+        </div>
+        <div class="preview-lines">
+          <div v-for="(line, index) in ficheAnalysis.lignes" :key="index" class="preview-line">
+            <div class="preview-source">
+              <strong>{{ line.producteur || `Producteur ${index + 1}` }}</strong>
+              <span>{{ line.produit || ficheAnalysis.produit }}</span>
+            </div>
+            <label class="preview-producer">Producteur correspondant
+              <select v-model="line.culture_id">
+                <option :value="null">À associer…</option>
+                <option v-for="producer in producteursPourLigne()" :key="producer.culture_id" :value="producer.culture_id">
+                  {{ producer.id_interne || `#${producer.exploitation_id}` }} · {{ producer.producteur || 'Nom non renseigné' }} · culture #{{ producer.culture_id }}
+                </option>
+              </select>
+            </label>
+            <label class="preview-quantity">Quantité (kg)
+              <input
+                type="number"
+                min="0"
+                step="any"
+                :value="line.quantite_kg"
+                @input="updateLineQuantity(line, ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+          </div>
+        </div>
+        <ul v-if="ficheAnalysis.incertitudes.length" class="preview-warnings">
+          <li v-for="(warning, index) in ficheAnalysis.incertitudes" :key="index">{{ warning }}</li>
+        </ul>
+        <p v-if="!ficheValide" class="preview-hint">
+          Associez chaque producteur à une culture du produit choisi et vérifiez les quantités avant l’enregistrement.
+        </p>
+        <div class="preview-actions">
+          <button class="action-btn" type="button" @click="ficheAnalysis = null">Annuler</button>
+          <button class="action-btn action-btn-primary" type="button" :disabled="!ficheValide || savingFiche" @click="saveImportedFiche">
+            <Loader v-if="savingFiche" class="spin-inline" :size="15" />
+            {{ savingFiche ? 'Enregistrement…' : 'Valider et enregistrer la fiche' }}
+          </button>
+        </div>
+      </div>
+    </section>
 
     <details v-if="lastImport && lastImport.sheets.length" class="debug-box">
       <summary>Structure détectée dans le fichier</summary>
@@ -361,6 +629,56 @@ const doReset = async () => {
         Voir comment importer pas à pas
       </button>
     </section>
+
+    <div
+      v-if="workingExcel"
+      class="workbook-overlay"
+      role="presentation"
+      @click.self="closeWorkingExcel"
+      @keydown.esc="closeWorkingExcel"
+    >
+      <section class="workbook-modal" role="dialog" aria-modal="true" aria-labelledby="workbook-title">
+        <header class="workbook-header">
+          <div class="workbook-title">
+            <FileSpreadsheet :size="19" />
+            <div>
+              <h2 id="workbook-title">Fichier Excel mis à jour</h2>
+              <p>Aperçu du classeur actuellement conservé dans Vobox</p>
+            </div>
+          </div>
+          <button class="workbook-close" type="button" aria-label="Fermer" @click="closeWorkingExcel">
+            <X :size="18" />
+          </button>
+        </header>
+
+        <div class="workbook-content">
+          <article v-for="sheet in workingExcel.sheets" :key="sheet.name" class="workbook-sheet">
+            <h3>{{ sheet.name }} <span>{{ sheet.rows }} lignes</span></h3>
+            <div v-if="sheet.sample.length" class="workbook-table-wrap">
+              <table class="workbook-table">
+                <tbody>
+                  <tr v-for="(row, rowIndex) in sheet.sample" :key="rowIndex">
+                    <td v-for="(cell, cellIndex) in row" :key="cellIndex">{{ cell || '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="workbook-empty">Aucune ligne non vide à afficher.</p>
+            <p v-if="sheet.rows > sheet.sample.length" class="workbook-note">
+              Aperçu limité aux {{ sheet.sample.length }} premières lignes non vides.
+            </p>
+          </article>
+          <p v-if="!workingExcel.sheets.length" class="workbook-empty">Aucune feuille à afficher.</p>
+        </div>
+
+        <footer class="workbook-footer">
+          <button class="action-btn" type="button" @click="closeWorkingExcel">Fermer</button>
+          <button class="action-btn action-btn-primary" type="button" @click="downloadWorkingExcel">
+            <Download :size="15" /> Télécharger le XLSX
+          </button>
+        </footer>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -546,6 +864,207 @@ const doReset = async () => {
   font-family: 'Courier New', monospace;
 }
 
+.historical-import {
+  flex-shrink: 0;
+  margin: 14px 12px 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--shape-lg);
+  background: var(--surface-container-low);
+}
+
+.historical-heading h2,
+.preview-heading h3 {
+  margin: 0;
+  color: var(--text-h);
+  font-size: 16px;
+}
+
+.historical-heading p,
+.preview-heading p {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.historical-drop {
+  min-height: 88px;
+  margin-top: 12px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1.5px dashed var(--outline);
+  border-radius: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.historical-drop:hover,
+.historical-drop.over {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.historical-drop strong {
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+.historical-drop span {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.historical-drop.busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.historical-message {
+  margin: 10px 0 0;
+}
+
+.fiche-preview {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.preview-heading,
+.preview-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.preview-heading > span {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--surface-container-high);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.preview-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.preview-fields label,
+.preview-line label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.preview-fields input,
+.preview-line input,
+.preview-line select {
+  min-width: 0;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-container);
+  color: var(--text-h);
+  font: inherit;
+  font-size: 12px;
+}
+
+.preview-total {
+  align-self: end;
+  padding: 7px 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.preview-total strong {
+  color: var(--text-h);
+}
+
+.preview-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.preview-line {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(200px, 2fr) minmax(120px, 0.8fr);
+  align-items: end;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--surface-container);
+}
+
+.preview-source {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding-bottom: 5px;
+}
+
+.preview-source strong {
+  overflow-wrap: anywhere;
+  color: var(--text-h);
+  font-size: 12px;
+}
+
+.preview-source span {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.preview-warnings {
+  margin: 10px 0 0;
+  padding: 9px 12px 9px 28px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--warning, #d97706) 10%, transparent);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.preview-hint {
+  margin: 10px 0 0;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.preview-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.preview-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  .preview-line {
+    grid-template-columns: 1fr;
+  }
+
+  .preview-actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+}
+
 .page-actions {
   flex-shrink: 0;
   display: flex;
@@ -583,6 +1102,151 @@ const doReset = async () => {
 .action-btn:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.spin-inline {
+  animation: spin 0.9s linear infinite;
+}
+
+.action-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-primary, white);
+}
+
+.action-btn-primary:hover:not(:disabled) {
+  color: var(--on-primary, white);
+  filter: brightness(0.96);
+}
+
+.workbook-overlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.workbook-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%);
+  max-height: min(82vh, 760px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg);
+  color: var(--text-h);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.workbook-header,
+.workbook-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.workbook-title {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: var(--accent);
+}
+
+.workbook-title h2 {
+  margin: 0;
+  color: var(--text-h);
+  font-size: 17px;
+}
+
+.workbook-title p {
+  margin: 3px 0 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.workbook-close {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.workbook-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 16px 18px;
+}
+
+.workbook-sheet {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-container-low);
+}
+
+.workbook-sheet h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 9px;
+  font-size: 14px;
+}
+
+.workbook-sheet h3 span,
+.workbook-note,
+.workbook-empty {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.workbook-table-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.workbook-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.workbook-table td {
+  max-width: 260px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.workbook-table tr:first-child {
+  background: var(--surface-container-high);
+  font-weight: 600;
+}
+
+.workbook-note,
+.workbook-empty {
+  margin: 8px 0 0;
+}
+
+.workbook-footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
 }
 
 .save-msg {

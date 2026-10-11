@@ -34,6 +34,7 @@ const steps: GuideStep[] = [
     subtitle: 'La base de tout : vos exploitations depuis Excel',
     points: [
       'Glissez votre fichier .xlsx dans la zone d’import de l’écran Données',
+      'Importez les fiches déjà produites depuis une photo ou un Excel, puis validez les quantités et producteurs proposés',
       'Vérifiez le récapitulatif : exploitations, cultures, unités agricoles',
       'Retrouvez chaque exploitation avec la recherche (opérateur, village, culture…)'
     ],

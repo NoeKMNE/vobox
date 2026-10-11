@@ -51,6 +51,31 @@ fn today_utc() -> (i64, u32, u32) {
     civil_from_days((secs / 86_400) as i64)
 }
 
+fn date_valide(date: &str) -> bool {
+    let parts: Vec<_> = date.split('-').collect();
+    if parts.len() != 3 || parts[0].len() != 4 || parts[1].len() != 2 || parts[2].len() != 2 {
+        return false;
+    }
+    let (Ok(year), Ok(month), Ok(day)) = (
+        parts[0].parse::<i64>(),
+        parts[1].parse::<u32>(),
+        parts[2].parse::<u32>(),
+    ) else {
+        return false;
+    };
+    if !(1900..=2200).contains(&year) || !(1..=12).contains(&month) {
+        return false;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=days_in_month).contains(&day)
+}
+
 /// Période de l'année pour une date : 1 = S1 (sept → fév), 2 = S2 (mars → août).
 fn period_of(_y: i64, m: u32) -> u8 {
     if (3..=8).contains(&m) { 2 } else { 1 }
@@ -503,6 +528,31 @@ pub struct FicheSummary {
     pub nb_producteurs: usize,
     pub statut: String,
     pub created_at: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ProducteurImportOption {
+    pub culture_id: i64,
+    pub exploitation_id: i64,
+    pub id_interne: Option<String>,
+    pub producteur: String,
+    pub produit: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct FicheImportLine {
+    pub culture_id: i64,
+    pub quantite_kg: f64,
+}
+
+#[derive(serde::Deserialize)]
+pub struct FicheImportRequest {
+    pub reference: Option<String>,
+    pub titre: String,
+    pub produit: String,
+    pub date: Option<String>,
+    pub quantite_demandee_kg: Option<f64>,
+    pub lignes: Vec<FicheImportLine>,
 }
 
 #[derive(Serialize, Clone)]
@@ -2555,6 +2605,204 @@ CREATE TABLE IF NOT EXISTS sessions (
         Ok(out)
     }
 
+    pub fn producteurs_importables(&self, token: &str) -> Result<Vec<ProducteurImportOption>, String> {
+        let conn = self.0.lock().map_err(|_| "Base de données verrouillée".to_string())?;
+        let user_id = self.require_user(&conn, token)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.id, e.id, e.id_interne,
+                        trim(COALESCE(e.operateur_prenom, '') || ' ' || COALESCE(e.operateur_nom, '')),
+                        COALESCE(c.produit, '')
+                 FROM cultures_certifiees c
+                 JOIN exploitations e ON e.id = c.exploitation_id
+                 WHERE e.user_id = ?1 AND trim(COALESCE(c.produit, '')) <> ''
+                 ORDER BY e.id_interne, e.operateur_nom, e.operateur_prenom, c.produit",
+            )
+            .map_err(|e| format!("Préparation des producteurs impossible : {e}"))?;
+        let rows = stmt
+            .query_map(params![user_id], |r| {
+                Ok(ProducteurImportOption {
+                    culture_id: r.get(0)?,
+                    exploitation_id: r.get(1)?,
+                    id_interne: r.get(2)?,
+                    producteur: r.get(3)?,
+                    produit: r.get(4)?,
+                })
+            })
+            .map_err(|e| format!("Lecture des producteurs impossible : {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Lecture des producteurs impossible : {e}"))
+    }
+
+    pub fn importer_fiche_historique(
+        &self,
+        token: &str,
+        fiche: FicheImportRequest,
+    ) -> Result<Fiche, String> {
+        let produit = fiche.produit.trim();
+        if produit.is_empty() || fiche.lignes.is_empty() {
+            return Err("La fiche doit contenir un produit et au moins un producteur.".into());
+        }
+        if let Some(date) = fiche.date.as_deref() {
+            if !date_valide(date) {
+                return Err("La date de la fiche doit être au format AAAA-MM-JJ.".into());
+            }
+        }
+        let mut quantites = std::collections::BTreeMap::<i64, f64>::new();
+        for ligne in fiche.lignes {
+            if !ligne.quantite_kg.is_finite() || ligne.quantite_kg <= 0.0 {
+                return Err("Chaque quantité producteur doit être strictement positive.".into());
+            }
+            *quantites.entry(ligne.culture_id).or_default() += ligne.quantite_kg;
+        }
+        let total: f64 = quantites.values().sum();
+        if !total.is_finite() || total <= 0.0 {
+            return Err("La quantité totale de la fiche est invalide.".into());
+        }
+        let demandee = fiche.quantite_demandee_kg.unwrap_or(total);
+        if !demandee.is_finite() || demandee < total {
+            return Err("La quantité demandée doit être supérieure ou égale aux quantités attribuées.".into());
+        }
+
+        let mut conn = self.0.lock().map_err(|_| "Base de données verrouillée".to_string())?;
+        let user_id = self.require_user(&conn, token)?;
+        let tx = conn.transaction().map_err(|e| format!("Erreur de transaction : {e}"))?;
+        let mut allocations = Vec::with_capacity(quantites.len());
+        for (culture_id, quantity) in quantites {
+            let row = tx
+                .query_row(
+                    "SELECT c.id, c.exploitation_id
+                     FROM cultures_certifiees c
+                     JOIN exploitations e ON e.id = c.exploitation_id
+                     WHERE c.id = ?1 AND e.user_id = ?2
+                       AND trim(lower(COALESCE(c.produit, ''))) = trim(lower(?3))",
+                    params![culture_id, user_id, produit],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(|e| format!("Vérification du producteur impossible : {e}"))?
+                .ok_or_else(|| format!("Le producteur sélectionné n’est pas associé au produit « {produit} »."))?;
+            allocations.push((row.0, row.1, quantity));
+        }
+
+        let titre = fiche
+            .titre
+            .trim()
+            .to_string();
+        let titre = if titre.is_empty() {
+            "Fiche de traçabilité importée".to_string()
+        } else {
+            titre
+        };
+        let reference = match fiche.reference.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()) {
+            Some(reference) => reference,
+            None => {
+                let (year, _, _) = today_utc();
+                let mut sequence: i64 = tx
+                    .query_row("SELECT COALESCE(MAX(id), 0) + 1 FROM fiches_tracabilite", [], |r| r.get(0))
+                    .map_err(|e| format!("Création de référence impossible : {e}"))?;
+                loop {
+                    let candidate = format!("IMP-{year}-{sequence:04}");
+                    let exists: bool = tx
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM fiches_tracabilite WHERE reference = ?1)",
+                            params![candidate],
+                            |r| r.get(0),
+                        )
+                        .map_err(|e| format!("Vérification de référence impossible : {e}"))?;
+                    if !exists {
+                        break candidate;
+                    }
+                    sequence += 1;
+                }
+            }
+        };
+        let duplicate: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM fiches_tracabilite WHERE reference = ?1)",
+                params![reference],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("Vérification de la fiche impossible : {e}"))?;
+        if duplicate {
+            return Err(format!("La fiche « {reference} » existe déjà dans les archives."));
+        }
+
+        let statut = if (demandee - total).abs() < 0.01 {
+            "complete"
+        } else {
+            "partielle"
+        };
+        let created_at = fiche
+            .date
+            .map(|date| format!("{date} 12:00:00"))
+            .unwrap_or_else(|| "datetime('now')".to_string());
+        if created_at == "datetime('now')" {
+            tx.execute(
+                "INSERT INTO fiches_tracabilite
+                     (user_id, reference, titre, produit, quantite_demandee_kg, quantite_attribuee_kg, statut)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![user_id, reference, titre, produit, demandee, total, statut],
+            )
+            .map_err(|e| format!("Enregistrement de la fiche impossible : {e}"))?;
+        } else {
+            tx.execute(
+                "INSERT INTO fiches_tracabilite
+                     (user_id, reference, titre, produit, quantite_demandee_kg, quantite_attribuee_kg, statut, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![user_id, reference, titre, produit, demandee, total, statut, created_at],
+            )
+            .map_err(|e| format!("Enregistrement de la fiche impossible : {e}"))?;
+        }
+        let fiche_id = tx.last_insert_rowid();
+        {
+            let mut insert = tx
+                .prepare(
+                    "INSERT INTO allocations (fiche_id, culture_id, exploitation_id, quantite_kg)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(|e| format!("Préparation des participations impossible : {e}"))?;
+            for (culture_id, exploitation_id, quantity) in &allocations {
+                insert
+                    .execute(params![fiche_id, culture_id, exploitation_id, quantity])
+                    .map_err(|e| format!("Enregistrement d’une participation impossible : {e}"))?;
+            }
+        }
+        tx.commit().map_err(|e| format!("Validation de l’import impossible : {e}"))?;
+
+        let created_at: String = conn
+            .query_row(
+                "SELECT created_at FROM fiches_tracabilite WHERE id = ?1",
+                params![fiche_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("Lecture de la fiche importée impossible : {e}"))?;
+        let mut items = Vec::with_capacity(allocations.len());
+        for (culture_id, exploitation_id, quantity) in allocations {
+            let exploitation = self
+                .load_exploitation_by_id(&conn, user_id, exploitation_id)?
+                .ok_or_else(|| "Exploitation introuvable après import.".to_string())?;
+            items.push(FicheItem {
+                culture_id,
+                quantite_kg: quantity,
+                exploitation,
+                unites: self.load_unites(&conn, exploitation_id)?,
+            });
+        }
+        Ok(Fiche {
+            id: fiche_id,
+            reference,
+            titre,
+            produit: produit.to_string(),
+            quantite_demandee_kg: demandee,
+            quantite_attribuee_kg: total,
+            nb_sacs: 0,
+            statut: statut.to_string(),
+            created_at,
+            items,
+        })
+    }
+
     pub fn generer_fiche_manuelle(
         &self,
         token: &str,
@@ -3189,6 +3437,16 @@ mod tests {
     use crate::excel::{CultureDraft, ExploitationDraft, ParsedWorkbook, UniteDraft};
 
     #[test]
+    fn valider_dates_de_fiche() {
+        assert!(date_valide("2024-02-29"));
+        assert!(date_valide("2025-12-31"));
+        assert!(!date_valide("2025-02-29"));
+        assert!(!date_valide("2025-13-01"));
+        assert!(!date_valide("2025-04-31"));
+        assert!(!date_valide("25-04-30"));
+    }
+
+    #[test]
     fn construire_requete_fts() {
         assert_eq!(build_fts_query("ALIOU", SearchCategory::All), "ALIOU*");
         assert_eq!(build_fts_query("Alou traore", SearchCategory::All), "Alou* traore*");
@@ -3635,6 +3893,64 @@ mod tests {
             .generer_fiche_manuelle(&token, "cacao", None, vec![(id1, -5.0)])
             .expect_err("quantité négative");
         assert!(negatif.contains("strictement positive"), "erreur: {negatif}");
+    }
+
+    #[test]
+    fn importer_fiche_historique_enregistre_quantites_et_participants() {
+        let (db, token) = db_avec_cacao();
+        let producteurs = db.producteurs_importables(&token).expect("producteurs");
+        let producteur = producteurs
+            .iter()
+            .find(|p| p.id_interne.as_deref() == Some("CAPKO_001"))
+            .expect("producteur CAPKO_001");
+        let imported = db
+            .importer_fiche_historique(
+                &token,
+                FicheImportRequest {
+                    reference: Some("CLIENT-2024-001".into()),
+                    titre: "Fiche importée".into(),
+                    produit: "CACAO".into(),
+                    date: Some("2024-02-29".into()),
+                    quantite_demandee_kg: Some(125.0),
+                    lignes: vec![FicheImportLine {
+                        culture_id: producteur.culture_id,
+                        quantite_kg: 120.0,
+                    }],
+                },
+            )
+            .expect("import fiche");
+
+        assert_eq!(imported.reference, "CLIENT-2024-001");
+        assert_eq!(imported.statut, "partielle");
+        assert!(imported.created_at.starts_with("2024-02-29"));
+        assert_eq!(imported.items.len(), 1);
+        assert_eq!(imported.items[0].exploitation.id_interne.as_deref(), Some("CAPKO_001"));
+        assert!((imported.quantite_attribuee_kg - 120.0).abs() < 0.001);
+        let history = db
+            .historique_producteur(&token, producteur.exploitation_id)
+            .expect("historique");
+        assert_eq!(history.nb_participations, 1);
+        assert!((history.total_kg - 120.0).abs() < 0.001);
+        assert_eq!(db.list_fiches(&token).expect("archives").len(), 1);
+
+        let duplicate = db
+            .importer_fiche_historique(
+                &token,
+                FicheImportRequest {
+                    reference: Some("CLIENT-2024-001".into()),
+                    titre: "Fiche importée".into(),
+                    produit: "cacao".into(),
+                    date: None,
+                    quantite_demandee_kg: None,
+                    lignes: vec![FicheImportLine {
+                        culture_id: producteur.culture_id,
+                        quantite_kg: 1.0,
+                    }],
+                },
+            )
+            .expect_err("référence en double");
+        assert!(duplicate.contains("existe déjà"));
+        assert_eq!(db.list_fiches(&token).expect("archives").len(), 1);
     }
 
     #[test]
