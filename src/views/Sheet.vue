@@ -9,6 +9,7 @@ import {
   genererFicheManuelle,
   getFiche,
   getToken,
+  setFicheNbSacs,
   producteursPourFiche,
   produitsDisponibles,
   type Exploitation,
@@ -68,15 +69,10 @@ const formatKg = (kg: number) => {
   return `${formatNum(arrondi)} t (${formatNum(Math.round(kg))} kg)`
 }
 
-const SAC_KG = 65
-
-const decomposerSacs = (kg: number) => {
-  const entiers = Math.floor(kg / SAC_KG)
-  const reste = Math.round(kg - entiers * SAC_KG)
-  return { entiers, reste }
-}
-
-const sacsDecomp = computed(() => decomposerSacs(fiche.value?.quantite_demandee_kg ?? 0))
+const nbSacsSaisie = ref<number | null>(0)
+const sauvegardeSacs = ref(false)
+const sacsFeedback = ref('')
+const sacsFeedbackErreur = ref(false)
 
 const nomProducteur = (item: FicheItem) => nomExploitation(item.exploitation)
 
@@ -222,6 +218,39 @@ const voirFiche = async (id: number) => {
   }
 }
 
+const enregistrerNbSacs = async () => {
+  const token = getToken()
+  const ficheCourante = fiche.value
+  const nbSacs = nbSacsSaisie.value
+  sacsFeedback.value = ''
+  if (!token || !ficheCourante) {
+    sacsFeedback.value = 'Impossible d’enregistrer le nombre de sacs.'
+    sacsFeedbackErreur.value = true
+    return
+  }
+  if (nbSacs == null || !Number.isInteger(nbSacs) || nbSacs < 0) {
+    sacsFeedback.value = 'Saisissez un nombre entier positif ou nul.'
+    sacsFeedbackErreur.value = true
+    return
+  }
+
+  sauvegardeSacs.value = true
+  try {
+    const ficheMiseAJour = await setFicheNbSacs(token, ficheCourante.id, nbSacs)
+    if (fiche.value?.id === ficheMiseAJour.id) {
+      fiche.value.nb_sacs = ficheMiseAJour.nb_sacs
+    }
+    nbSacsSaisie.value = ficheMiseAJour.nb_sacs
+    sacsFeedback.value = 'Nombre de sacs enregistré.'
+    sacsFeedbackErreur.value = false
+  } catch (e) {
+    sacsFeedback.value = typeof e === 'string' ? e : 'Enregistrement impossible.'
+    sacsFeedbackErreur.value = true
+  } finally {
+    sauvegardeSacs.value = false
+  }
+}
+
 const retour = () => {
   fiche.value = null
   router.replace({ query: {} })
@@ -231,7 +260,11 @@ const retour = () => {
 const imprimer = () => window.print()
 
 watch(fiche, () => {
-  if (fiche.value) window.scrollTo({ top: 0 })
+  if (fiche.value) {
+    nbSacsSaisie.value = fiche.value.nb_sacs
+    sacsFeedback.value = ''
+    window.scrollTo({ top: 0 })
+  }
 })
 
 watch(
@@ -409,19 +442,28 @@ onMounted(() => {
             <b>{{ formatKg(fiche.quantite_attribuee_kg) }}</b>
           </div>
           <div class="doc-field doc-field-sacs">
-            <span>Sacs (1 sac = {{ SAC_KG }} kg)</span>
+            <span>Nombre de sacs</span>
             <div class="sacs-hero">
-              <b v-if="sacsDecomp.entiers > 0" class="sacs-count"
-                >{{ formatNum(sacsDecomp.entiers) }}
-                <small>sac{{ sacsDecomp.entiers > 1 ? 's' : '' }}</small></b
-              >
-              <b v-else class="sacs-count"
-                >{{ sacsDecomp.reste > 0 ? formatNum(sacsDecomp.reste) : '0' }}
-                <small>{{ sacsDecomp.reste > 0 ? 'kg' : 'sac' }}</small></b
-              >
-              <span v-if="sacsDecomp.entiers > 0 && sacsDecomp.reste > 0" class="sacs-reste"
-                >+ {{ formatNum(sacsDecomp.reste) }} kg</span
-              >
+              <div class="sacs-editor">
+                <input
+                  v-model.number="nbSacsSaisie"
+                  type="number"
+                  min="0"
+                  step="1"
+                  class="sacs-input"
+                  aria-label="Nombre de sacs"
+                />
+                <span>sac{{ nbSacsSaisie === 1 ? '' : 's' }}</span>
+                <button type="button" class="sacs-save-btn" :disabled="sauvegardeSacs || nbSacsSaisie == null" @click="enregistrerNbSacs">
+                  {{ sauvegardeSacs ? 'Enregistrement…' : 'Enregistrer' }}
+                </button>
+              </div>
+              <b class="sacs-print-count">
+                {{ formatNum(fiche.nb_sacs) }} <small>sac{{ fiche.nb_sacs === 1 ? '' : 's' }}</small>
+              </b>
+              <span v-if="sacsFeedback" :class="['sacs-feedback', { error: sacsFeedbackErreur }]" role="status">
+                {{ sacsFeedback }}
+              </span>
             </div>
           </div>
           <div class="doc-field doc-field-statut">
@@ -1007,29 +1049,68 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
-.doc-field-sacs .sacs-count {
+.doc-field-sacs .sacs-input {
+  width: 86px;
+  min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-h);
   font-size: 26px;
   font-weight: 800;
   line-height: 1.1;
-  color: var(--accent);
-  white-space: nowrap;
 }
 
-.doc-field-sacs .sacs-count small {
+.doc-field-sacs .sacs-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+.doc-field-sacs .sacs-save-btn {
+  padding: 5px 9px;
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.doc-field-sacs .sacs-save-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.doc-field-sacs .sacs-feedback {
+  font-size: 11px;
+  color: var(--success, #16a34a);
+}
+
+.doc-field-sacs .sacs-feedback.error {
+  color: var(--danger, #dc2626);
+}
+
+.doc-field-sacs .sacs-print-count {
+  display: none;
+  color: var(--accent);
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.doc-field-sacs .sacs-print-count small {
   font-size: 13px;
   font-weight: 600;
   text-transform: none;
 }
 
-.doc-field-sacs .sacs-reste {
+.doc-field-sacs .sacs-hero > span {
   font-size: 13px;
-  font-weight: 700;
-  color: var(--text-h);
-  background: var(--accent-bg);
-  border: 1px solid var(--accent-border);
-  padding: 1px 10px;
-  border-radius: 999px;
-  white-space: nowrap;
 }
 
 .doc-status {
@@ -1237,6 +1318,15 @@ onMounted(() => {
   .producer-row {
     break-inside: avoid;
     box-shadow: none;
+  }
+
+  .doc-field-sacs .sacs-editor,
+  .doc-field-sacs .sacs-feedback {
+    display: none !important;
+  }
+
+  .doc-field-sacs .sacs-print-count {
+    display: inline-block;
   }
 }
 </style>

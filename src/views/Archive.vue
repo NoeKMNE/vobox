@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowDown, ArrowUp, FileText, Loader, Scale, Users } from '@lucide/vue'
+import { ArrowDown, ArrowUp, FileText, Loader, Scale, Trash2, Users } from '@lucide/vue'
 import {
   getToken,
   listFiches,
+  supprimerFiche,
   type FicheSummary
 } from '../composables/useAuth'
 
@@ -14,6 +15,7 @@ const fiches = ref<FicheSummary[]>([])
 const loading = ref(false)
 const error = ref('')
 const triDesc = ref(true)
+const ficheSuppression = ref<number | null>(null)
 
 const formatNum = (n: number, digits = 0) =>
   new Intl.NumberFormat('fr-FR', { maximumFractionDigits: digits }).format(n)
@@ -53,6 +55,26 @@ const load = async () => {
 
 const voir = (id: number) => {
   router.push({ name: 'Sheet', query: { id: String(id) } })
+}
+
+const supprimer = async (fiche: FicheSummary) => {
+  if (ficheSuppression.value !== null) return
+  if (!window.confirm(
+    `Supprimer la fiche ${fiche.reference} ?\n\nLes quantités de production affectées seront restituées et redeviendront disponibles. Cette action est irréversible.`
+  )) return
+
+  const token = getToken()
+  if (!token) return
+  ficheSuppression.value = fiche.id
+  error.value = ''
+  try {
+    await supprimerFiche(token, fiche.id)
+    fiches.value = fiches.value.filter((item) => item.id !== fiche.id)
+  } catch (e) {
+    error.value = typeof e === 'string' ? e : 'Suppression impossible'
+  } finally {
+    ficheSuppression.value = null
+  }
 }
 
 const voirParticipations = () => {
@@ -123,6 +145,17 @@ onMounted(load)
             </div>
             <button class="view-btn" @click="voir(h.id)">
               Voir
+            </button>
+            <button
+              class="view-btn delete-btn"
+              :disabled="ficheSuppression !== null"
+              :aria-label="`Supprimer la fiche ${h.reference}`"
+              :title="`Supprimer la fiche ${h.reference} et restituer les quantités`"
+              @click="supprimer(h)"
+            >
+              <Loader v-if="ficheSuppression === h.id" class="spin" :size="14" />
+              <Trash2 v-else :size="14" />
+              <span>{{ ficheSuppression === h.id ? 'Suppression…' : 'Supprimer' }}</span>
             </button>
           </div>
         </div>
@@ -349,6 +382,20 @@ onMounted(load)
 
 .view-btn:hover {
   filter: brightness(1.05);
+}
+
+.delete-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-color: color-mix(in srgb, var(--danger, #dc2626) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger, #dc2626) 8%, var(--bg));
+  color: var(--danger, #dc2626);
+}
+
+.delete-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
 }
 
 .part-btn {

@@ -486,6 +486,7 @@ pub struct Fiche {
     pub produit: String,
     pub quantite_demandee_kg: f64,
     pub quantite_attribuee_kg: f64,
+    pub nb_sacs: i64,
     pub statut: String,
     pub created_at: String,
     pub items: Vec<FicheItem>,
@@ -666,6 +667,7 @@ CREATE TABLE IF NOT EXISTS sessions (
                  produit TEXT NOT NULL,
                  quantite_demandee_kg REAL NOT NULL,
                  quantite_attribuee_kg REAL NOT NULL DEFAULT 0,
+                 nb_sacs INTEGER NOT NULL DEFAULT 0,
                  statut TEXT NOT NULL DEFAULT 'complete',
                  created_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
@@ -733,6 +735,7 @@ CREATE TABLE IF NOT EXISTS sessions (
             "titre",
             "TEXT DEFAULT 'Fiche de traçabilité produit'",
         )?;
+        ensure_column(&conn, "fiches_tracabilite", "nb_sacs", "INTEGER NOT NULL DEFAULT 0")?;
         ensure_column(&conn, "users", "avatar", "TEXT")?;
         Ok(Db(Mutex::new(conn)))
     }
@@ -2476,6 +2479,7 @@ CREATE TABLE IF NOT EXISTS sessions (
             produit,
             quantite_demandee_kg: quantite_kg,
             quantite_attribuee_kg: allocated_total,
+            nb_sacs: 0,
             statut: statut.into(),
             created_at,
             items,
@@ -2705,6 +2709,7 @@ CREATE TABLE IF NOT EXISTS sessions (
             produit,
             quantite_demandee_kg: total,
             quantite_attribuee_kg: total,
+            nb_sacs: 0,
             statut: "complete".into(),
             created_at,
             items,
@@ -2820,6 +2825,60 @@ CREATE TABLE IF NOT EXISTS sessions (
             .map_err(|e| format!("Erreur de lecture des fiches : {e}"))
     }
 
+    pub fn set_fiche_nb_sacs(
+        &self,
+        token: &str,
+        id: i64,
+        nb_sacs: i64,
+    ) -> Result<Fiche, String> {
+        if nb_sacs < 0 {
+            return Err("Le nombre de sacs ne peut pas être négatif.".into());
+        }
+
+        let conn = self.0.lock().map_err(|_| "Base de données verrouillée".to_string())?;
+        let user_id = self.require_user(&conn, token)?;
+        let updated = conn
+            .execute(
+                "UPDATE fiches_tracabilite SET nb_sacs = ?1 WHERE id = ?2 AND user_id = ?3",
+                params![nb_sacs, id, user_id],
+            )
+            .map_err(|e| format!("Enregistrement du nombre de sacs impossible : {e}"))?;
+        if updated == 0 {
+            return Err("Fiche introuvable.".into());
+        }
+        drop(conn);
+
+        self.get_fiche(token, id)
+    }
+
+    pub fn supprimer_fiche(&self, token: &str, id: i64) -> Result<(), String> {
+        let mut conn = self.0.lock().map_err(|_| "Base de données verrouillée".to_string())?;
+        let user_id = self.require_user(&conn, token)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Suppression de la fiche impossible : {e}"))?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM fiches_tracabilite WHERE id = ?1 AND user_id = ?2)",
+                params![id, user_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Vérification de la fiche impossible : {e}"))?;
+        if !exists {
+            return Err("Fiche introuvable.".into());
+        }
+
+        tx.execute("DELETE FROM allocations WHERE fiche_id = ?1", params![id])
+            .map_err(|e| format!("Restitution des quantités impossible : {e}"))?;
+        tx.execute(
+            "DELETE FROM fiches_tracabilite WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )
+        .map_err(|e| format!("Suppression de la fiche impossible : {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Validation de la suppression impossible : {e}"))
+    }
+
     pub fn get_fiche(&self, token: &str, id: i64) -> Result<Fiche, String> {
         let conn = self.0.lock().map_err(|_| "Base de données verrouillée".to_string())?;
         let user_id = self.require_user(&conn, token)?;
@@ -2827,7 +2886,7 @@ CREATE TABLE IF NOT EXISTS sessions (
         let row = conn
             .query_row(
                 "SELECT f.id, f.reference, f.titre, f.produit, f.quantite_demandee_kg,
-                        f.quantite_attribuee_kg, f.statut, f.created_at
+                        f.quantite_attribuee_kg, f.nb_sacs, f.statut, f.created_at
                  FROM fiches_tracabilite f
                  WHERE f.id = ?1 AND f.user_id = ?2",
                 params![id, user_id],
@@ -2839,14 +2898,15 @@ CREATE TABLE IF NOT EXISTS sessions (
                         r.get::<_, String>(3)?,
                         r.get::<_, f64>(4)?,
                         r.get::<_, f64>(5)?,
-                        r.get::<_, String>(6)?,
+                        r.get::<_, i64>(6)?,
                         r.get::<_, String>(7)?,
+                        r.get::<_, String>(8)?,
                     ))
                 },
             )
             .map_err(|e| format!("Erreur de lecture de la fiche : {e}"))?;
 
-        let (fiche_id, reference, titre, produit, demandee, attribuee, statut, created_at) = row;
+        let (fiche_id, reference, titre, produit, demandee, attribuee, nb_sacs, statut, created_at) = row;
 
         let mut stmt = conn
             .prepare(
@@ -2883,6 +2943,7 @@ CREATE TABLE IF NOT EXISTS sessions (
             produit,
             quantite_demandee_kg: demandee,
             quantite_attribuee_kg: attribuee,
+            nb_sacs,
             statut,
             created_at,
             items,
@@ -3689,6 +3750,56 @@ mod tests {
         let relue = db.get_fiche(&token, fiche.id).expect("relecture");
         assert_eq!(relue.items.len(), 1);
         assert!((relue.items[0].quantite_kg - h1).abs() < 0.0001);
+    }
+
+    #[test]
+    fn nombre_sacs_fiche_persistant() {
+        let (db, token) = db_avec_cacao();
+        let fiche = db
+            .generer_fiche_seed(&token, "cacao", 1.0, None, 1)
+            .expect("fiche");
+
+        let mise_a_jour = db
+            .set_fiche_nb_sacs(&token, fiche.id, 24)
+            .expect("enregistrement du nombre de sacs");
+        assert_eq!(mise_a_jour.nb_sacs, 24);
+        assert_eq!(db.get_fiche(&token, fiche.id).expect("relecture").nb_sacs, 24);
+        assert!(db.set_fiche_nb_sacs(&token, fiche.id, -1).is_err());
+    }
+
+    #[test]
+    fn supprimer_fiche_restitue_les_quantites() {
+        let (db, token) = db_avec_cacao();
+        let allocations_totales = || {
+            let conn = db.0.lock().expect("verrou base");
+            conn.query_row(
+                "SELECT COALESCE(SUM(a.quantite_kg), 0)
+                 FROM allocations a
+                 JOIN fiches_tracabilite f ON f.id = a.fiche_id
+                 WHERE f.user_id = (SELECT id FROM users WHERE email = 'test@agro.app')",
+                [],
+                |row| row.get::<_, f64>(0),
+            )
+            .expect("total allocations")
+        };
+        assert_eq!(allocations_totales(), 0.0);
+        let fiche = db
+            .generer_fiche_seed(&token, "cacao", 500.0, None, 1)
+            .expect("fiche");
+        assert!((allocations_totales() - fiche.quantite_attribuee_kg).abs() < 0.01);
+
+        db.supprimer_fiche(&token, fiche.id).expect("suppression");
+
+        let apres = db.produits_disponibles(&token).expect("disponibilités");
+        let stock_cacao = apres
+            .iter()
+            .find(|p| p.produit == "cacao")
+            .expect("cacao redevenu disponible");
+        assert_eq!(stock_cacao.quantite_allouee_kg, 0.0);
+        assert!(stock_cacao.quantite_livrable_kg > 0.0);
+        assert_eq!(allocations_totales(), 0.0);
+        assert!(db.get_fiche(&token, fiche.id).is_err());
+        assert!(db.supprimer_fiche(&token, fiche.id).is_err());
     }
 
     #[test]

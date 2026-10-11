@@ -527,6 +527,21 @@ fn get_fiche(state: tauri::State<'_, Db>, token: String, id: i64) -> Result<Fich
 }
 
 #[tauri::command]
+fn supprimer_fiche(state: tauri::State<'_, Db>, token: String, id: i64) -> Result<(), String> {
+    state.supprimer_fiche(&token, id)
+}
+
+#[tauri::command]
+fn set_fiche_nb_sacs(
+    state: tauri::State<'_, Db>,
+    token: String,
+    id: i64,
+    nb_sacs: i64,
+) -> Result<Fiche, String> {
+    state.set_fiche_nb_sacs(&token, id, nb_sacs)
+}
+
+#[tauri::command]
 fn stats_globales(state: tauri::State<'_, Db>, token: String) -> Result<GlobalStats, String> {
     state.stats_globales(&token)
 }
@@ -751,6 +766,8 @@ pub fn run() {
             producteurs_participants,
             list_fiches,
             get_fiche,
+            supprimer_fiche,
+            set_fiche_nb_sacs,
             stats_globales,
             get_ai_settings,
             save_ai_settings,

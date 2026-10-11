@@ -210,6 +210,7 @@ export interface Fiche {
   produit: string
   quantite_demandee_kg: number
   quantite_attribuee_kg: number
+  nb_sacs: number
   statut: string
   created_at: string
   items: FicheItem[]
@@ -294,6 +295,14 @@ export function listFiches(token: string): Promise<FicheSummary[]> {
 
 export function getFiche(token: string, id: number): Promise<Fiche> {
   return invoke<Fiche>('get_fiche', { token, id })
+}
+
+export function supprimerFiche(token: string, id: number): Promise<void> {
+  return invoke('supprimer_fiche', { token, id })
+}
+
+export function setFicheNbSacs(token: string, id: number, nbSacs: number): Promise<Fiche> {
+  return invoke<Fiche>('set_fiche_nb_sacs', { token, id, nbSacs })
 }
 
 export interface ParticipationProducteur {
